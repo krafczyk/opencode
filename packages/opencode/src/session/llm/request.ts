@@ -98,6 +98,13 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 
+  const sampling = {
+    temperature: ProviderTransform.temperature(input.model),
+    topP: ProviderTransform.topP(input.model),
+    topK: ProviderTransform.topK(input.model),
+  }
+  const allowConfiguredSampling = !input.model.id.toLowerCase().includes("gemini") || sampling.temperature !== undefined
+
   const messages =
     isOpenaiOauth || input.isWorkflow
       ? input.messages
@@ -121,11 +128,12 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       message: input.user,
     },
     {
-      temperature: input.model.capabilities.temperature
-        ? (input.agent.temperature ?? ProviderTransform.temperature(input.model))
-        : undefined,
-      topP: input.agent.topP ?? ProviderTransform.topP(input.model),
-      topK: ProviderTransform.topK(input.model),
+      temperature:
+        input.model.capabilities.temperature && allowConfiguredSampling
+          ? (input.agent.temperature ?? sampling.temperature)
+          : undefined,
+      topP: allowConfiguredSampling ? (input.agent.topP ?? sampling.topP) : undefined,
+      topK: sampling.topK,
       maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
       options,
     },
