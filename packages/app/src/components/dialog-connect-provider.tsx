@@ -1,4 +1,3 @@
-import type { IntegrationMethod, IntegrationOauthConnectOutput } from "@opencode-ai/client/promise"
 import { Button } from "@opencode-ai/ui/button"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
@@ -13,21 +12,9 @@ import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { DialogBody, DialogHeader, DialogTitle, DialogV2 } from "@opencode-ai/ui/v2/dialog-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
 import { showToast } from "@/utils/toast"
-import {
-  type Accessor,
-  type Component,
-  createEffect,
-  createMemo,
-  createResource,
-  createUniqueId,
-  For,
-  Match,
-  onCleanup,
-  onMount,
-  Show,
-  Switch,
-} from "solid-js"
-import { createStore, produce } from "solid-js/store"
+import { type Accessor, type Component, createMemo, createUniqueId, For, Match, onMount, Show, Switch } from "solid-js"
+import { createStore } from "solid-js/store"
+import { useQueryClient } from "@tanstack/solid-query"
 import { useParams } from "@solidjs/router"
 import { Link } from "@/components/link"
 import { useServerSDK } from "@/context/server-sdk"
@@ -37,10 +24,10 @@ import { useSettings } from "@/context/settings"
 import { popularProviders, useProviders } from "@/hooks/use-providers"
 import { CustomProviderForm } from "./dialog-custom-provider"
 import { decode64 } from "@/utils/base64"
+import { pathKey } from "@/utils/path-key"
+import { createProviderConnectionController } from "./provider-connection-controller"
 
 const CUSTOM_ID = "_custom"
-type ConnectMethod = Extract<IntegrationMethod, { type: "key" | "oauth" }>
-
 export function useProviderConnectController(options: { onBack?: () => void } = {}) {
   const [store, setStore] = createStore({ selected: undefined as string | undefined })
   const reset = () => setStore("selected", undefined)
@@ -390,112 +377,84 @@ function ProviderConnection(props: {
   const newLayout = settings.general.newLayoutDesigns
   const providers = useProviders(() => props.directory?.())
   const directory = () => props.directory?.() ?? decode64(params.dir)
-  const location = () => {
-    const value = directory()
-    return value ? { directory: value } : undefined
-  }
-
-  const alive = { value: true }
-  const timer = { current: undefined as ReturnType<typeof setTimeout> | undefined }
-
-  onCleanup(() => {
-    alive.value = false
-    if (timer.current === undefined) return
-    clearTimeout(timer.current)
-    timer.current = undefined
-  })
 
   const provider = createMemo(
     () => providers.all().get(props.provider) ?? serverSync().data.provider.all.get(props.provider)!,
   )
-  const fallback = createMemo<ConnectMethod[]>(() => [
-    {
-      type: "key" as const,
-      label: language.t("provider.connect.method.apiKey"),
+  const controller = createProviderConnectionController({
+    provider: props.provider,
+    directory,
+    fallbackKeyLabel: () => language.t("provider.connect.method.apiKey"),
+    requestFailed: () => language.t("common.requestFailed"),
+    invalidCode: () => language.t("provider.connect.oauth.code.invalid"),
+    services: {
+      integration: {
+        load: (integrationID, value) =>
+          serverSDK()
+            .api.integration.get({
+              integrationID,
+              location: value ? { directory: value } : undefined,
+            })
+            .then((result) => result.data),
+      },
+      connection: {
+        key: (integrationID, value, key) =>
+          serverSDK().api.integration.connect.key({
+            integrationID,
+            location: value ? { directory: value } : undefined,
+            key,
+          }),
+        oauth: (integrationID, value, methodID, inputs) =>
+          serverSDK()
+            .api.integration.oauth.connect({
+              integrationID,
+              methodID,
+              inputs,
+              location: value ? { directory: value } : undefined,
+            })
+            .then((result) => result.data),
+        status: (integrationID, value, attemptID) =>
+          serverSDK()
+            .api.integration.oauth.status({
+              integrationID,
+              attemptID,
+              location: value ? { directory: value } : undefined,
+            })
+            .then((result) => result.data),
+        complete: (integrationID, value, attemptID, code) =>
+          serverSDK().api.integration.oauth.complete({
+            integrationID,
+            attemptID,
+            location: value ? { directory: value } : undefined,
+            code,
+          }),
+      },
+      provider: {
+        refresh: () =>
+          queryClient.refetchQueries(serverSync().queryOptions.providers(directory() ? pathKey(directory()!) : null)),
+      },
+      completion: {
+        finish: () => {
+          dialog.close()
+          showToast({
+            variant: "success",
+            icon: "circle-check",
+            title: language.t("provider.connect.toast.connected.title", { provider: provider().name }),
+            description: language.t("provider.connect.toast.connected.description", { provider: provider().name }),
+          })
+        },
+      },
     },
-  ])
-  const [integration] = createResource(
-    () => ({ provider: props.provider, directory: directory() }),
-    (input) =>
-      serverSDK()
-        .api.integration.get({
-          integrationID: input.provider,
-          location: input.directory ? { directory: input.directory } : undefined,
-        })
-        .then((result) => result.data),
-  )
-  const loading = createMemo(() => integration.loading)
-  const methods = createMemo<ConnectMethod[]>(() => {
-    const values = integration.latest?.methods.filter(
-      (method): method is ConnectMethod => method.type === "key" || method.type === "oauth",
-    )
-    return values?.length ? values : fallback()
   })
-  const [store, setStore] = createStore({
-    methodIndex: undefined as undefined | number,
-    authorization: undefined as undefined | IntegrationOauthConnectOutput["data"],
-    promptInputs: undefined as undefined | Record<string, string>,
-    state: "pending" as undefined | "pending" | "complete" | "error" | "prompt",
-    error: undefined as string | undefined,
-  })
-
-  type Action =
-    | { type: "method.select"; index: number }
-    | { type: "method.reset" }
-    | { type: "auth.prompt" }
-    | { type: "auth.inputs"; inputs: Record<string, string> }
-    | { type: "auth.pending" }
-    | { type: "auth.complete"; authorization: IntegrationOauthConnectOutput["data"] }
-    | { type: "auth.error"; error: string }
-
-  function dispatch(action: Action) {
-    setStore(
-      produce((draft) => {
-        if (action.type === "method.select") {
-          draft.methodIndex = action.index
-          draft.authorization = undefined
-          draft.promptInputs = undefined
-          draft.state = undefined
-          draft.error = undefined
-          return
-        }
-        if (action.type === "method.reset") {
-          draft.methodIndex = undefined
-          draft.authorization = undefined
-          draft.promptInputs = undefined
-          draft.state = undefined
-          draft.error = undefined
-          return
-        }
-        if (action.type === "auth.prompt") {
-          draft.state = "prompt"
-          draft.error = undefined
-          return
-        }
-        if (action.type === "auth.inputs") {
-          draft.promptInputs = action.inputs
-          draft.state = undefined
-          draft.error = undefined
-          return
-        }
-        if (action.type === "auth.pending") {
-          draft.state = "pending"
-          draft.error = undefined
-          return
-        }
-        if (action.type === "auth.complete") {
-          draft.state = "complete"
-          draft.authorization = action.authorization
-          draft.error = undefined
-          return
-        }
-        draft.state = "error"
-        draft.error = action.error
-      }),
-    )
-  }
-
-  const method = createMemo(() => (store.methodIndex !== undefined ? methods().at(store.methodIndex!) : undefined))
+  const loading = controller.data.loading
+  const methods = controller.data.methods
+  const method = controller.data.method
+  const methodIndex = controller.data.methodIndex
+  const authorization = controller.data.authorization
+  const state = controller.auth.state
+  const error = controller.auth.error
+  const connectKey = controller.auth.connectKey
+  const completeCode = controller.auth.completeCode
 
   const methodLabel = (value?: { type?: string; label?: string }) => {
     if (!value) return ""
@@ -513,56 +472,7 @@ function ProviderConnection(props: {
     }
   }
 
-  function formatError(value: unknown, fallback: string): string {
-    if (value && typeof value === "object" && "data" in value) {
-      const data = (value as { data?: { message?: unknown } }).data
-      if (typeof data?.message === "string" && data.message) return data.message
-    }
-    if (value && typeof value === "object" && "error" in value) {
-      const nested = formatError((value as { error?: unknown }).error, "")
-      if (nested) return nested
-    }
-    if (value && typeof value === "object" && "message" in value) {
-      const message = (value as { message?: unknown }).message
-      if (typeof message === "string" && message) return message
-    }
-    if (value instanceof Error && value.message) return value.message
-    if (typeof value === "string" && value) return value
-    return fallback
-  }
-
-  async function selectMethod(index: number, inputs?: Record<string, string>) {
-    if (timer.current !== undefined) {
-      clearTimeout(timer.current)
-      timer.current = undefined
-    }
-
-    const method = methods()[index]
-    dispatch({ type: "method.select", index })
-
-    if (method.type === "oauth") {
-      if (method.prompts?.length && !inputs) {
-        dispatch({ type: "auth.prompt" })
-        return
-      }
-      dispatch({ type: "auth.pending" })
-      await serverSDK()
-        .api.integration.oauth.connect({
-          integrationID: props.provider,
-          methodID: method.id,
-          inputs: inputs ?? {},
-          location: location(),
-        })
-        .then((x) => {
-          if (!alive.value) return
-          dispatch({ type: "auth.complete", authorization: x.data })
-        })
-        .catch((e) => {
-          if (!alive.value) return
-          dispatch({ type: "auth.error", error: formatError(e, language.t("common.requestFailed")) })
-        })
-    }
-  }
+  const selectMethod = controller.auth.select
 
   function AuthPromptsView() {
     const [formStore, setFormStore] = createStore({
@@ -583,7 +493,7 @@ function ProviderConnection(props: {
     const current = createMemo(() => {
       const all = prompts()
       const index = all.findIndex((prompt, index) => index >= formStore.index && matches(prompt, formStore.value))
-      if (index === -1) return
+      if (index === -1) return undefined
       return {
         index,
         prompt: all[index],
@@ -597,13 +507,14 @@ function ProviderConnection(props: {
     })
 
     async function next(index: number, value: Record<string, string>) {
-      if (store.methodIndex === undefined) return
+      const selected = methodIndex()
+      if (selected === undefined) return
       const next = prompts().findIndex((prompt, i) => i > index && matches(prompt, value))
       if (next !== -1) {
         setFormStore("index", next)
         return
       }
-      await selectMethod(store.methodIndex, value)
+      await selectMethod(selected, value)
     }
 
     async function handleSubmit(e: SubmitEvent) {
@@ -617,12 +528,12 @@ function ProviderConnection(props: {
     const item = () => current()
     const text = createMemo(() => {
       const prompt = item()?.prompt
-      if (!prompt || prompt.type !== "text") return
+      if (!prompt || prompt.type !== "text") return undefined
       return prompt
     })
     const select = createMemo(() => {
       const prompt = item()?.prompt
-      if (!prompt || prompt.type !== "select") return
+      if (!prompt || prompt.type !== "select") return undefined
       return prompt
     })
 
@@ -693,32 +604,9 @@ function ProviderConnection(props: {
     listRef?.onKeyDown(e)
   }
 
-  let auto = false
-  createEffect(() => {
-    if (auto) return
-    if (loading()) return
-    if (methods().length === 1) {
-      auto = true
-      void selectMethod(0)
-    }
-  })
-
-  async function complete() {
-    await serverSync()
-      .refreshProviders()
-      .catch(() => undefined)
-    dialog.close()
-    showToast({
-      variant: "success",
-      icon: "circle-check",
-      title: language.t("provider.connect.toast.connected.title", { provider: provider().name }),
-      description: language.t("provider.connect.toast.connected.description", { provider: provider().name }),
-    })
-  }
-
   function goBack() {
-    if (methods().length > 1 && store.methodIndex !== undefined) {
-      dispatch({ type: "method.reset" })
+    if (methods().length > 1 && methodIndex() !== undefined) {
+      controller.auth.reset()
       return
     }
     props.onBack()
@@ -806,9 +694,9 @@ function ProviderConnection(props: {
     async function handleSubmit(e: SubmitEvent) {
       e.preventDefault()
 
-      const form = e.currentTarget as HTMLFormElement
-      const formData = new FormData(form)
-      const apiKey = formData.get("apiKey") as string
+      if (!(e.currentTarget instanceof HTMLFormElement)) return
+      const value = new FormData(e.currentTarget).get("apiKey")
+      const apiKey = typeof value === "string" ? value : ""
 
       if (!apiKey?.trim()) {
         setFormStore("error", language.t("provider.connect.apiKey.required"))
@@ -816,12 +704,7 @@ function ProviderConnection(props: {
       }
 
       setFormStore("error", undefined)
-      await serverSDK().api.integration.connect.key({
-        integrationID: props.provider,
-        location: location(),
-        key: apiKey,
-      })
-      await complete()
+      await connectKey(apiKey)
     }
 
     if (newLayout())
@@ -936,9 +819,9 @@ function ProviderConnection(props: {
     async function handleSubmit(e: SubmitEvent) {
       e.preventDefault()
 
-      const form = e.currentTarget as HTMLFormElement
-      const formData = new FormData(form)
-      const code = formData.get("code") as string
+      if (!(e.currentTarget instanceof HTMLFormElement)) return
+      const value = new FormData(e.currentTarget).get("code")
+      const code = typeof value === "string" ? value : ""
 
       if (!code?.trim()) {
         setFormStore("error", language.t("provider.connect.oauth.code.required"))
@@ -946,20 +829,7 @@ function ProviderConnection(props: {
       }
 
       setFormStore("error", undefined)
-      const result = await serverSDK()
-        .api.integration.oauth.complete({
-          integrationID: props.provider,
-          attemptID: store.authorization!.attemptID,
-          location: location(),
-          code,
-        })
-        .then(() => ({ ok: true as const }))
-        .catch((error) => ({ ok: false as const, error }))
-      if (result.ok) {
-        await complete()
-        return
-      }
-      setFormStore("error", formatError(result.error, language.t("provider.connect.oauth.code.invalid")))
+      setFormStore("error", await completeCode(code))
     }
 
     if (newLayout())
@@ -967,7 +837,7 @@ function ProviderConnection(props: {
         <div class="flex flex-col gap-5 px-3 text-[13px] font-[440] leading-5 tracking-[-0.04px] text-v2-text-text-muted">
           <div>
             {language.t("provider.connect.oauth.code.visit.prefix")}
-            <Link href={store.authorization!.url} class="text-v2-text-text-base">
+            <Link href={authorization()!.url} class="text-v2-text-text-base">
               {language.t("provider.connect.oauth.code.visit.link")}
             </Link>
             {language.t("provider.connect.oauth.code.visit.suffix", { provider: provider().name })}
@@ -1006,7 +876,7 @@ function ProviderConnection(props: {
       <div class="flex flex-col gap-6">
         <div class="text-14-regular text-text-base">
           {language.t("provider.connect.oauth.code.visit.prefix")}
-          <Link href={store.authorization!.url}>{language.t("provider.connect.oauth.code.visit.link")}</Link>
+          <Link href={authorization()!.url}>{language.t("provider.connect.oauth.code.visit.link")}</Link>
           {language.t("provider.connect.oauth.code.visit.suffix", { provider: provider().name })}
         </div>
         <form onSubmit={handleSubmit} class="flex flex-col items-start gap-4">
@@ -1032,52 +902,18 @@ function ProviderConnection(props: {
 
   function OAuthAutoView() {
     const code = createMemo(() => {
-      const instructions = store.authorization?.instructions
+      const instructions = authorization()?.instructions
       if (instructions?.includes(":")) {
         return instructions.split(":").pop()?.trim()
       }
       return instructions
     })
 
-    onMount(() => {
-      const poll = async () => {
-        const authorization = store.authorization
-        if (!authorization || !alive.value) return
-        const result = await serverSDK()
-          .api.integration.oauth.status({
-            integrationID: props.provider,
-            attemptID: authorization.attemptID,
-            location: location(),
-          })
-          .then((value) => ({ ok: true as const, status: value.data }))
-          .catch((error) => ({ ok: false as const, error }))
-        if (!alive.value) return
-        if (!result.ok) {
-          dispatch({ type: "auth.error", error: formatError(result.error, language.t("common.requestFailed")) })
-          return
-        }
-        if (result.status.status === "complete") {
-          await complete()
-          return
-        }
-        if (result.status.status === "failed") {
-          dispatch({ type: "auth.error", error: result.status.message })
-          return
-        }
-        if (result.status.status === "expired") {
-          dispatch({ type: "auth.error", error: language.t("common.requestFailed") })
-          return
-        }
-        timer.current = setTimeout(poll, 1_000)
-      }
-      void poll()
-    })
-
     return (
       <div class="flex flex-col gap-6">
         <div class="text-14-regular text-text-base">
           {language.t("provider.connect.oauth.auto.visit.prefix")}
-          <Link href={store.authorization!.url}>{language.t("provider.connect.oauth.auto.visit.link")}</Link>
+          <Link href={authorization()!.url}>{language.t("provider.connect.oauth.auto.visit.link")}</Link>
           {language.t("provider.connect.oauth.auto.visit.suffix", { provider: provider().name })}
         </div>
         <TextField
@@ -1121,7 +957,7 @@ function ProviderConnection(props: {
         <div
           onKeyDown={handleKey}
           tabIndex={newLayout() ? undefined : 0}
-          autofocus={!newLayout() && store.methodIndex === undefined ? true : undefined}
+          autofocus={!newLayout() && methodIndex() === undefined ? true : undefined}
         >
           <Switch>
             <Match when={loading()}>
@@ -1132,10 +968,10 @@ function ProviderConnection(props: {
                 </div>
               </div>
             </Match>
-            <Match when={store.methodIndex === undefined}>
+            <Match when={methodIndex() === undefined}>
               <MethodSelection />
             </Match>
-            <Match when={store.state === "pending"}>
+            <Match when={state() === "pending"}>
               <div class="text-14-regular text-text-base">
                 <div class="flex items-center gap-x-2">
                   <Spinner />
@@ -1143,14 +979,14 @@ function ProviderConnection(props: {
                 </div>
               </div>
             </Match>
-            <Match when={store.state === "prompt"}>
+            <Match when={state() === "prompt"}>
               <AuthPromptsView />
             </Match>
-            <Match when={store.state === "error"}>
+            <Match when={state() === "error"}>
               <div class="text-14-regular text-text-base">
                 <div class="flex items-center gap-x-2">
                   <Icon name="circle-ban-sign" class="text-icon-critical-base" />
-                  <span>{language.t("provider.connect.status.failed", { error: store.error ?? "" })}</span>
+                  <span>{language.t("provider.connect.status.failed", { error: error() ?? "" })}</span>
                 </div>
               </div>
             </Match>
@@ -1159,10 +995,10 @@ function ProviderConnection(props: {
             </Match>
             <Match when={method()?.type === "oauth"}>
               <Switch>
-                <Match when={store.authorization?.mode === "code"}>
+                <Match when={authorization()?.mode === "code"}>
                   <OAuthCodeView />
                 </Match>
-                <Match when={store.authorization?.mode === "auto"}>
+                <Match when={authorization()?.mode === "auto"}>
                   <OAuthAutoView />
                 </Match>
               </Switch>
