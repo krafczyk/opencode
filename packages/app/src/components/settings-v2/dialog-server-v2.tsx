@@ -6,7 +6,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { type Component, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { type ServerConnection } from "@/context/server"
-import { useServerManagementController } from "../dialog-select-server"
+import { useServerFormController } from "../server/server-management-controller"
 import "./settings-v2.css"
 
 export const DialogServerV2: Component<{
@@ -15,39 +15,39 @@ export const DialogServerV2: Component<{
 }> = (props) => {
   const dialog = useDialog()
   const language = useLanguage()
-  const controller = useServerManagementController({
+  const form = useServerFormController({
     onSelect: () => dialog.close(),
     navigateOnAdd: false,
   })
   const [opened, setOpened] = createSignal(false)
 
   onMount(() => {
-    if (props.mode === "add") controller.startAdd()
-    if (props.mode === "edit" && props.server) controller.startEdit(props.server)
+    if (props.mode === "add") form.start.add()
+    if (props.mode === "edit" && props.server) form.start.edit(props.server)
     setOpened(true)
   })
 
   onCleanup(() => {
-    controller.resetForm()
+    form.reset()
   })
 
   createEffect(() => {
     if (!opened()) return
-    if (controller.isFormMode()) return
+    if (form.state.open()) return
     dialog.close()
   })
 
   const keyDown = (event: KeyboardEvent) => {
     if (event.key !== "Enter" || event.isComposing) return
     event.preventDefault()
-    controller.submitForm()
+    form.submit()
   }
 
   const title = () =>
     props.mode === "add" ? language.t("dialog.server.add.title") : language.t("dialog.server.edit.title")
 
   const submitLabel = () => {
-    if (controller.formBusy()) return language.t("dialog.server.add.checking")
+    if (form.state.busy()) return language.t("dialog.server.add.checking")
     if (props.mode === "add") return language.t("dialog.server.add.button")
     return language.t("common.save")
   }
@@ -66,16 +66,16 @@ export const DialogServerV2: Component<{
               type="text"
               appearance="large"
               class="!w-full self-stretch"
-              value={controller.formValue()}
+              value={form.state.value()}
               placeholder={language.t("dialog.server.add.placeholder")}
-              invalid={!!controller.formError()}
-              disabled={controller.formBusy()}
+              invalid={!!form.state.error()}
+              disabled={form.state.busy()}
               autofocus
-              onInput={(event) => controller.handleFormChange()(event.currentTarget.value)}
+              onInput={(event) => form.change.value(event.currentTarget.value)}
               onKeyDown={keyDown}
             />
-            <Show when={controller.formError()}>
-              <span class="settings-v2-server-dialog-error">{controller.formError()}</span>
+            <Show when={form.state.error()}>
+              <span class="settings-v2-server-dialog-error">{form.state.error()}</span>
             </Show>
           </div>
           <div class="flex w-full min-w-0 flex-col gap-2">
@@ -84,10 +84,10 @@ export const DialogServerV2: Component<{
               type="text"
               appearance="large"
               class="!w-full self-stretch"
-              value={controller.formName()}
+              value={form.state.name()}
               placeholder={language.t("dialog.server.add.namePlaceholder")}
-              disabled={controller.formBusy()}
-              onInput={(event) => controller.handleFormNameChange()(event.currentTarget.value)}
+              disabled={form.state.busy()}
+              onInput={(event) => form.change.name(event.currentTarget.value)}
               onKeyDown={keyDown}
             />
           </div>
@@ -98,10 +98,10 @@ export const DialogServerV2: Component<{
                 type="text"
                 appearance="large"
                 class="!w-full self-stretch"
-                value={controller.formUsername()}
+                value={form.state.username()}
                 placeholder={language.t("dialog.server.add.usernamePlaceholder")}
-                disabled={controller.formBusy()}
-                onInput={(event) => controller.handleFormUsernameChange()(event.currentTarget.value)}
+                disabled={form.state.busy()}
+                onInput={(event) => form.change.username(event.currentTarget.value)}
                 onKeyDown={keyDown}
               />
             </div>
@@ -111,10 +111,10 @@ export const DialogServerV2: Component<{
                 type="password"
                 appearance="large"
                 class="!w-full self-stretch"
-                value={controller.formPassword()}
+                value={form.state.password()}
                 placeholder={language.t("dialog.server.add.passwordPlaceholder")}
-                disabled={controller.formBusy()}
-                onInput={(event) => controller.handleFormPasswordChange()(event.currentTarget.value)}
+                disabled={form.state.busy()}
+                onInput={(event) => form.change.password(event.currentTarget.value)}
                 onKeyDown={keyDown}
               />
             </div>
@@ -122,10 +122,10 @@ export const DialogServerV2: Component<{
         </div>
       </DialogBody>
       <DialogFooter>
-        <ButtonV2 variant="neutral" disabled={controller.formBusy()} onClick={() => dialog.close()}>
+        <ButtonV2 variant="neutral" disabled={form.state.busy()} onClick={() => dialog.close()}>
           {language.t("common.cancel")}
         </ButtonV2>
-        <ButtonV2 variant="contrast" disabled={controller.formBusy()} onClick={controller.submitForm}>
+        <ButtonV2 variant="contrast" disabled={form.state.busy()} onClick={form.submit}>
           {submitLabel()}
         </ButtonV2>
       </DialogFooter>
