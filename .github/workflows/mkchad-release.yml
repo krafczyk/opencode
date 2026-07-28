@@ -172,7 +172,6 @@ jobs:
       - name: Verify the complete asset set and generate checksums
         id: assets
         env:
-          TAG: ${{ needs.validate.outputs.tag }}
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
@@ -238,6 +237,11 @@ jobs:
           COMMIT: ${{ needs.validate.outputs.commit }}
         run: |
           set -euo pipefail
+          git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          [[ "$(git rev-parse "refs/tags/$TAG^{}")" == "$COMMIT" ]] || {
+            echo "remote release tag no longer resolves to the verified commit"
+            exit 1
+          }
           gh release create "$TAG" \
             "${{ steps.assets.outputs.directory }}/${{ steps.assets.outputs.x64 }}" \
             "${{ steps.assets.outputs.directory }}/${{ steps.assets.outputs.arm64 }}" \
@@ -252,19 +256,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
           ASSET_DIR: ${{ steps.assets.outputs.directory }}
           X64: ${{ steps.assets.outputs.x64 }}
           ARM64: ${{ steps.assets.outputs.arm64 }}
         run: |
           set -euo pipefail
-          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName --jq '[.isDraft, .tagName] | @tsv')"
-          IFS=$'\t' read -r is_draft tag_name <<< "$draft"
+          mapfile -t release < <(
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName,assets \
+              --jq '.isDraft, .tagName, (.assets[].name)'
+          )
+          is_draft="${release[0]:-}"
+          tag_name="${release[1]:-}"
           [[ "$is_draft" == "true" && "$tag_name" == "$TAG" ]] || {
             echo "draft identity does not match the verified tag"
             exit 1
           }
 
-          mapfile -t actual < <(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          mapfile -t actual < <(printf '%s\n' "${release[@]:2}" | LC_ALL=C sort)
           expected=("SHA256SUMS" "$ARM64" "$X64")
           [[ "${actual[*]}" == "${expected[*]}" ]] || {
             printf 'expected draft assets: %s\n' "${expected[*]}"
@@ -274,30 +283,52 @@ jobs:
 
           draft_dir="$RUNNER_TEMP/mkchad-draft-assets"
           mkdir -p "$draft_dir"
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir" --pattern "$X64"
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir" --pattern "$ARM64"
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir" --pattern "SHA256SUMS"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir"
           cmp -- "$ASSET_DIR/SHA256SUMS" "$draft_dir/SHA256SUMS"
           (
             cd "$draft_dir"
             sha256sum -c SHA256SUMS
           )
-
-      - name: Publish the verified draft
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.validate.outputs.tag }}
-        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          [[ "$(git rev-parse "refs/tags/$TAG^{}")" == "$COMMIT" ]] || {
+            echo "remote release tag changed before publication"
+            exit 1
+          }
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
       - name: Verify the published release is immutable
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+          ASSET_DIR: ${{ steps.assets.outputs.directory }}
+          X64: ${{ steps.assets.outputs.x64 }}
+          ARM64: ${{ steps.assets.outputs.arm64 }}
         run: |
           set -euo pipefail
+          git fetch --force --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+          [[ "$(git rev-parse "refs/tags/$TAG^{}")" == "$COMMIT" ]] || {
+            echo "published release tag does not resolve to the verified commit"
+            exit 1
+          }
           release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '[.draft, .immutable, .tag_name] | @tsv')"
           IFS=$'\t' read -r draft immutable tag_name <<< "$release"
           [[ "$draft" == "false" && "$immutable" == "true" && "$tag_name" == "$TAG" ]] || {
             echo "published release did not become immutable"
             exit 1
           }
+
+          mapfile -t actual < <(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          expected=("SHA256SUMS" "$ARM64" "$X64")
+          [[ "${actual[*]}" == "${expected[*]}" ]] || {
+            echo "published release asset set changed before immutability"
+            exit 1
+          }
+          published_dir="$RUNNER_TEMP/mkchad-published-assets"
+          mkdir -p "$published_dir"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$published_dir"
+          cmp -- "$ASSET_DIR/SHA256SUMS" "$published_dir/SHA256SUMS"
+          (
+            cd "$published_dir"
+            sha256sum -c SHA256SUMS
+          )

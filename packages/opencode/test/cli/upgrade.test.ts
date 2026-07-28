@@ -2,7 +2,7 @@ import { afterEach, expect, mock, spyOn, test } from "bun:test"
 import { log } from "@clack/prompts"
 import { Installation, ManagedUpgradeMessage } from "../../src/installation"
 import { GlobalBus } from "../../src/bus/global"
-import { upgrade as automaticUpgrade } from "../../src/cli/upgrade"
+import { upgrade } from "../../src/cli/upgrade"
 import { UpgradeCommand } from "../../src/cli/cmd/upgrade"
 
 afterEach(() => {
@@ -15,7 +15,7 @@ test("skips automatic updates for MkChad versions before updater discovery", asy
   const install = spyOn(Installation, "upgrade").mockRejectedValue(new Error("package upgrade should not run"))
   const event = spyOn(GlobalBus, "emit")
 
-  await automaticUpgrade("1.18.3-mkchad.6")
+  await upgrade("1.18.3-mkchad.6")
 
   expect(method).not.toHaveBeenCalled()
   expect(latest).not.toHaveBeenCalled()

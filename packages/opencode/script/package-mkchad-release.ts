@@ -2,6 +2,7 @@
 
 import fs from "fs/promises"
 import path from "path"
+import { parseArgs } from "util"
 
 const architectures = {
   "linux-x64": "x64",
@@ -34,8 +35,12 @@ export async function packageMkchadRelease(input: {
 }) {
   const manifest = createManifest(input)
   const binary = path.join(input.buildDir, "bin/opencode")
-  if (!(await Bun.file(binary).exists())) throw new Error(`expected binary is absent: ${binary}`)
-  const binaryInfo = await fs.stat(binary)
+  const binaryInfo = await fs.stat(binary).catch((error) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      throw new Error(`expected binary is absent: ${binary}`)
+    }
+    throw error
+  })
   if (!binaryInfo.isFile()) throw new Error(`expected binary is not a file: ${binary}`)
   if ((binaryInfo.mode & 0o111) === 0) throw new Error(`expected binary is not executable: ${binary}`)
 
@@ -82,7 +87,7 @@ export async function packageMkchadRelease(input: {
     if (files.trim().split("\n").sort().join("\n") !== "package/bin/opencode\npackage/package.json") {
       throw new Error(`unexpected packed contents for ${asset}: ${files.trim()}`)
     }
-    return { ...input, tarball }
+    return { tarball }
   } catch (error) {
     await fs.rm(tarball, { force: true })
     throw error
@@ -92,17 +97,26 @@ export async function packageMkchadRelease(input: {
 }
 
 if (import.meta.main) {
-  const option = (name: string) => {
-    const index = process.argv.indexOf(name)
-    const value = process.argv[index + 1]
-    if (index === -1 || !value) throw new Error(`${name} is required`)
+  const values = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      "build-dir": { type: "string" },
+      "output-dir": { type: "string" },
+      target: { type: "string" },
+      version: { type: "string" },
+    },
+    strict: true,
+  }).values
+  const option = (name: keyof typeof values) => {
+    const value = values[name]
+    if (!value) throw new Error(`--${name} is required`)
     return value
   }
   const result = await packageMkchadRelease({
-    buildDir: option("--build-dir"),
-    outputDir: option("--output-dir"),
-    target: option("--target"),
-    version: option("--version"),
+    buildDir: option("build-dir"),
+    outputDir: option("output-dir"),
+    target: option("target"),
+    version: option("version"),
   })
   console.log(result.tarball)
 }
