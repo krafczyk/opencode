@@ -98,15 +98,17 @@ users to a reviewed GitHub Release or their managed MkChad container update.
 
 #### Release Administration
 
-`MkChad release packages` has two paths. A manual `workflow_dispatch` rehearsal
-accepts a dev-reachable ref and a MkChad version, then runs the same validation,
-native x64/ARM64 build, direct npm installation, version, and managed-upgrade
-refusal checks as a release. It never creates a release. Only a pushed tag
-matching `v<major>.<minor>.<patch>-mkchad.<revision>` can enter publication.
-That tag must resolve to the checked-out commit and be reachable from `dev`.
+`MkChad release packages` has two tag paths from the protected `mkchad` branch.
+A tag matching `rehearsal-v<major>.<minor>.<patch>-mkchad.<revision>` runs the
+same validation, native x64/ARM64 build, direct npm installation, version, and
+managed-upgrade refusal checks as a release, but it never creates a release.
+Only a tag matching `v<major>.<minor>.<patch>-mkchad.<revision>` can enter
+publication. Every tag must resolve to the checked-out commit and be reachable
+from `mkchad`. Delete a completed rehearsal tag only after retaining its run as
+release evidence; never reuse its name for different content.
 
 Before the first tag, repository administrators must enable immutable GitHub
-Releases, protect `dev`, and configure a tag ruleset that restricts MkChad
+Releases, protect `mkchad`, and configure a tag ruleset that restricts MkChad
 release tags to authorized maintainers. They must also create the protected
 `mkchad-release` environment with the required reviewers. Add an environment
 secret named `MKCHAD_RELEASE_ADMIN_TOKEN` containing a fine-grained token limited
