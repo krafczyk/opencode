@@ -2,12 +2,12 @@ import { afterEach, describe, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { fileURLToPath, pathToFileURL } from "url"
-import { Effect, Layer, Result, Schema } from "effect"
+import { Deferred, Effect, Layer, Result, Schema } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ToolRegistry } from "@/tool/registry"
 import { Tool } from "@/tool/tool"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { awaitWithTimeout, testEffect } from "../lib/effect"
 import { TestConfig } from "../fixture/config"
 import { Config } from "@/config/config"
 import { Plugin } from "@/plugin"
@@ -459,6 +459,52 @@ describe("tool.registry", () => {
       expect(result.attachments).toEqual([
         { type: "file", mime: "image/png", filename: "picture.png", url: "data:image/png;base64,AAAA" },
       ])
+    }),
+  )
+
+  it.instance("executes metadata updates emitted by plugin tools", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const customTools = path.join(test.directory, ".opencode", "tools")
+      const pluginTool = pathToFileURL(path.resolve(import.meta.dir, "../../../plugin/src/tool.ts")).href
+      yield* Effect.promise(() => fs.mkdir(customTools, { recursive: true }))
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(customTools, "metadata.ts"),
+          [
+            `import { tool } from ${JSON.stringify(pluginTool)}`,
+            "export default tool({",
+            "  description: 'metadata tool',",
+            "  args: {},",
+            "  execute: async (_args, context) => {",
+            "    context.metadata({ title: 'Running tool', metadata: { child: 'session-child' } })",
+            "    return 'ok'",
+            "  },",
+            "})",
+            "",
+          ].join("\n"),
+        ),
+      )
+
+      const registry = yield* ToolRegistry.Service
+      const loaded = (yield* registry.all()).find((tool) => tool.id === "metadata")
+      if (!loaded) throw new Error("custom metadata tool was not loaded")
+      const agents = yield* Agent.Service
+      const update = yield* Deferred.make<{ title?: string; metadata?: Record<string, unknown> }>()
+      yield* loaded.execute({}, {
+        sessionID: SessionID.make("ses_test"),
+        messageID: MessageID.make("msg_test"),
+        agent: (yield* agents.defaultInfo()).name,
+        abort: new AbortController().signal,
+        messages: [],
+        metadata: (input) => Deferred.succeed(update, input).pipe(Effect.asVoid),
+        ask: () => Effect.void,
+      } satisfies Tool.Context)
+
+      expect(yield* awaitWithTimeout(Deferred.await(update), "plugin metadata update did not execute")).toEqual({
+        title: "Running tool",
+        metadata: { child: "session-child" },
+      })
     }),
   )
 
