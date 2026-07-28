@@ -1,6 +1,6 @@
 import { NodeHttpServer } from "@effect/platform-node"
 import { describe, expect } from "bun:test"
-import { Context, Effect, Layer, Option, Ref } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Auth } from "../../src/auth"
@@ -42,9 +42,6 @@ const apiLayer = HttpRouter.serve(
 )
 const it = testEffect(apiLayer)
 
-const methodCalls = Ref.makeUnsafe(0)
-const latestCalls = Ref.makeUnsafe(0)
-const upgradeCalls = Ref.makeUnsafe(0)
 const managedApiLayer = HttpRouter.serve(
   HttpApiBuilder.layer(RootHttpApi).pipe(
     Layer.provide([controlHandlers, controlPlaneHandlers, makeGlobalHandlers("1.18.3-mkchad.6")]),
@@ -59,13 +56,7 @@ const managedApiLayer = HttpRouter.serve(
   Layer.provide(Layer.mock(Auth.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
   Layer.provide(Layer.mock(MoveSession.Service)({})),
-  Layer.provide(
-    Layer.mock(Installation.Service)({
-      method: () => Ref.update(methodCalls, (calls) => calls + 1).pipe(Effect.as("npm" as const)),
-      latest: () => Ref.update(latestCalls, (calls) => calls + 1).pipe(Effect.as("9.9.9")),
-      upgrade: () => Ref.update(upgradeCalls, (calls) => calls + 1),
-    }),
-  ),
+  Layer.provide(Layer.mock(Installation.Service)({})),
   Layer.provide(ServerAuth.Config.configLayer({ password: Option.none(), username: "opencode" })),
 )
 const managedIt = testEffect(managedApiLayer)
@@ -94,17 +85,10 @@ describe("global HttpApi", () => {
 
   managedIt.live("refuses MkChad upgrades before updater discovery", () =>
     Effect.gen(function* () {
-      yield* Ref.set(methodCalls, 0)
-      yield* Ref.set(latestCalls, 0)
-      yield* Ref.set(upgradeCalls, 0)
-
       const response = yield* HttpClient.post(GlobalPaths.upgrade)
 
-      expect(response.status).toBe(400)
+      expect(response.status).toBe(200)
       expect(yield* response.json).toEqual({ success: false, error: ManagedUpgradeMessage })
-      expect(yield* Ref.get(methodCalls)).toBe(0)
-      expect(yield* Ref.get(latestCalls)).toBe(0)
-      expect(yield* Ref.get(upgradeCalls)).toBe(0)
     }),
   )
 })

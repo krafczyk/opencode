@@ -98,7 +98,7 @@ export function makeGlobalHandlers(version = InstallationVersion) {
       const upgrade = Effect.fn("GlobalHttpApi.upgrade")(function* (ctx: { payload: typeof GlobalUpgradeInput.Type }) {
         if (isManagedDistribution(version)) {
           return {
-            status: 400,
+            status: 200,
             body: { success: false as const, error: ManagedUpgradeMessage },
           }
         }

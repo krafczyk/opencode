@@ -112,6 +112,8 @@ test("packs only the manifest and executable payload", async () => {
   ])
   expect(await packed.exited).toBe(0)
   const manifest = Bun.spawn(["tar", "-xOzf", result.tarball, "package/package.json"], { stdout: "pipe" })
-  expect(JSON.parse(await new Response(manifest.stdout).text())).toEqual(createManifest(result))
+  expect(JSON.parse(await new Response(manifest.stdout).text())).toEqual(
+    createManifest({ target: "linux-x64", version: "1.18.3-mkchad.6" }),
+  )
   expect(await manifest.exited).toBe(0)
 })
