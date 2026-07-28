@@ -1,25 +1,15 @@
 name: MkChad release packages
-run-name: "${{ github.event_name == 'push' && format('MkChad release {0}', github.ref_name) || format('MkChad rehearsal {0}', inputs.version) }}"
+run-name: "${{ startsWith(github.ref_name, 'rehearsal-') && format('MkChad rehearsal {0}', github.ref_name) || format('MkChad release {0}', github.ref_name) }}"
 
 on:
   push:
     tags:
       - "v*-mkchad.*"
-  workflow_dispatch:
-    inputs:
-      ref:
-        description: "Commit SHA or dev-reachable ref to rehearse; this never publishes"
-        required: true
-        default: "dev"
-        type: string
-      version:
-        description: "MkChad version without v, for example 1.18.3-mkchad.6"
-        required: true
-        type: string
+      - "rehearsal-v*-mkchad.*"
 
 concurrency:
   # Preserve interrupted runs for explicit draft reconciliation; never cancel a release run.
-  group: "${{ github.workflow }}-${{ github.event_name == 'push' && github.ref || inputs.ref }}"
+  group: "${{ github.workflow }}-${{ github.ref }}"
   cancel-in-progress: false
 
 permissions:
@@ -41,54 +31,36 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
-          ref: ${{ github.event_name == 'push' && github.sha || inputs.ref }}
+          ref: ${{ github.sha }}
 
       - name: Verify source identity
         id: identity
-        env:
-          INPUT_REF: ${{ inputs.ref }}
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          version="$INPUT_VERSION"
           publish=false
+          tag="${GITHUB_REF#refs/tags/}"
 
-          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            tag="${GITHUB_REF#refs/tags/}"
-            [[ "$GITHUB_REF" == "refs/tags/$tag" ]]
-            [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-mkchad\.(0|[1-9][0-9]*)$ ]] || {
-              echo "MkChad release tags must match v<major>.<minor>.<patch>-mkchad.<revision>"
-              exit 1
-            }
+          [[ "$GITHUB_REF" == "refs/tags/$tag" ]]
+          if [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-mkchad\.(0|[1-9][0-9]*)$ ]]; then
             version="${tag#v}"
-            tag_commit="$(git rev-parse --verify "refs/tags/$tag^{}")"
-            [[ "$(git rev-parse HEAD)" == "$tag_commit" ]] || {
-              echo "checked-out commit does not equal the peeled tag commit"
-              exit 1
-            }
-            git fetch --no-tags origin "+refs/heads/dev:refs/remotes/origin/dev"
-            git merge-base --is-ancestor "$tag_commit" origin/dev || {
-              echo "tagged commit must be reachable from protected dev"
-              exit 1
-            }
             publish=true
+          elif [[ "$tag" =~ ^rehearsal-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-mkchad\.(0|[1-9][0-9]*)$ ]]; then
+            version="${tag#rehearsal-v}"
           else
-            [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-mkchad\.(0|[1-9][0-9]*)$ ]] || {
-              echo "rehearsal version must match <major>.<minor>.<patch>-mkchad.<revision>"
-              exit 1
-            }
-            tag="rehearsal-$GITHUB_RUN_ID"
-            tag_commit="$(git rev-parse --verify "$INPUT_REF^{commit}")"
-            [[ "$(git rev-parse HEAD)" == "$tag_commit" ]] || {
-              echo "checked-out rehearsal commit does not equal the requested ref"
-              exit 1
-            }
-            git fetch --no-tags origin "+refs/heads/dev:refs/remotes/origin/dev"
-            git merge-base --is-ancestor "$tag_commit" origin/dev || {
-              echo "rehearsal commit must be reachable from dev"
-              exit 1
-            }
+            echo "tags must match v<version>-mkchad.<revision> or rehearsal-v<version>-mkchad.<revision>"
+            exit 1
           fi
+
+          tag_commit="$(git rev-parse --verify "refs/tags/$tag^{}")"
+          [[ "$(git rev-parse HEAD)" == "$tag_commit" ]] || {
+            echo "checked-out commit does not equal the peeled tag commit"
+            exit 1
+          }
+          git fetch --no-tags origin "+refs/heads/mkchad:refs/remotes/origin/mkchad"
+          git merge-base --is-ancestor "$tag_commit" origin/mkchad || {
+            echo "tagged commit must be reachable from protected mkchad"
+            exit 1
+          }
 
           {
             echo "commit=$tag_commit"
@@ -162,8 +134,8 @@ jobs:
     needs:
       - validate
       - package
-    # Manual rehearsals exercise every preceding gate but can never enter publication.
-    if: github.event_name == 'push' && needs.validate.outputs.publish == 'true'
+    # Rehearsal tags exercise every preceding gate but can never enter publication.
+    if: needs.validate.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     environment:
       name: mkchad-release
