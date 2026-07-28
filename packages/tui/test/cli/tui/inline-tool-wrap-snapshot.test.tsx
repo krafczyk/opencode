@@ -228,6 +228,25 @@ describe("TUI inline tool wrapping", () => {
     expect(toolDisplay("plugin_tool")).toBe("generic")
   })
 
+  test("renders custom tools with complete child-session metadata as tasks", () => {
+    expect(toolDisplay("plugin_tool", {
+      parentSessionId: "parent",
+      sessionId: "child",
+      model: { providerID: "openai", modelID: "gpt-5" },
+    })).toBe("task")
+    expect(toolDisplay("nested_plugin_tool", {
+      parentSessionId: "child",
+      sessionId: "grandchild",
+      model: { providerID: "openai", modelID: "gpt-5" },
+    })).toBe("task")
+    expect(toolDisplay("plugin_tool", { sessionId: "child" })).toBe("generic")
+    expect(toolDisplay("plugin_tool", {
+      parentSessionId: "parent",
+      sessionId: "child",
+      model: { providerID: "openai" },
+    })).toBe("generic")
+  })
+
   test("replaces pending copy when a tool fails before completion", async () => {
     const frame = await renderFrame(() => <FailedPendingToolFixture />, { width: 72, height: 3 })
     expect(frame).toContain("Patch failed")
