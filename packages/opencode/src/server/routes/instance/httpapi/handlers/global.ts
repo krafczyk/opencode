@@ -91,7 +91,7 @@ export function makeGlobalHandlers(version = InstallationVersion) {
         if (isManagedDistribution(version)) {
           return HttpServerResponse.jsonUnsafe(
             { success: false as const, error: ManagedUpgradeMessage },
-            { status: 400 },
+            { status: 200 },
           )
         }
         const method = yield* installation.method()
