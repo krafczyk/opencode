@@ -142,6 +142,9 @@ const layer = Layer.effect(
                 const bridge = yield* EffectBridge.make()
                 const pluginCtx: PluginToolContext = {
                   ...toolCtx,
+                  metadata: (input) => {
+                    bridge.fork(toolCtx.metadata(input))
+                  },
                   ask: (req) => bridge.promise(toolCtx.ask(req)),
                   directory: ctx.directory,
                   worktree: ctx.worktree,
