@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
@@ -68,15 +68,13 @@ function testLayer(
 
 describe("installation", () => {
   describe("managed distributions", () => {
-    testEffect(Layer.empty).effect("identifies only MkChad release versions as managed", () =>
-      Effect.sync(() => {
-        expect(isManagedDistribution("1.18.3-mkchad.6")).toBe(true)
-        expect(isManagedDistribution("1.18.3")).toBe(false)
-        expect(isManagedDistribution("local")).toBe(false)
-        expect(isManagedDistribution("1.18.3-beta.1")).toBe(false)
-        expect(isManagedDistribution("1.18.3-mkchadness.1")).toBe(false)
-      }),
-    )
+    test("identifies only MkChad release versions as managed", () => {
+      expect(isManagedDistribution("1.18.3-mkchad.6")).toBe(true)
+      expect(isManagedDistribution("1.18.3")).toBe(false)
+      expect(isManagedDistribution("local")).toBe(false)
+      expect(isManagedDistribution("1.18.3-beta.1")).toBe(false)
+      expect(isManagedDistribution("1.18.3-mkchadness.1")).toBe(false)
+    })
   })
 
   describe("latest", () => {
