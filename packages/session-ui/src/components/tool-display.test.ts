@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { toolDisplay } from "./tool-display"
+import { taskRoleName, toolDisplay } from "./tool-display"
 
 describe("toolDisplay", () => {
   test("preserves native task tools", () => {
@@ -33,5 +33,19 @@ describe("toolDisplay", () => {
         model: { providerID: "openai", modelID: "gpt-5.6-terra" },
       }),
     ).toBe("task")
+  })
+})
+
+describe("taskRoleName", () => {
+  test("formats the final CE role segment", () => {
+    expect(taskRoleName("ce-debug.hypothesis-investigator")).toBe("Hypothesis Investigator")
+    expect(taskRoleName("ce-simplify-code.code-quality-reviewer")).toBe("Code Quality Reviewer")
+    expect(taskRoleName("ce-work.implementation-worker")).toBe("Implementation Worker")
+  })
+
+  test("rejects missing and malformed roles", () => {
+    expect(taskRoleName(undefined)).toBeUndefined()
+    expect(taskRoleName(42)).toBeUndefined()
+    expect(taskRoleName("ce-debug.")).toBeUndefined()
   })
 })
