@@ -216,8 +216,7 @@ export function Session() {
       ? messages().flatMap((message) =>
           (sync.data.part[message.id] ?? []).filter(
             (part): part is ToolPart =>
-              part.type === "tool" &&
-              part.tool === "task" &&
+              isTaskDisplay(part) &&
               part.state.status === "running" &&
               part.state.metadata?.background !== true,
           ),
@@ -1492,7 +1491,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           )
         }}
       </For>
-      <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
+      <Show when={props.parts.some(isTaskDisplay)}>
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
             {childShortcut()}
@@ -1502,8 +1501,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
                 sync.data.capabilities.experimentalBackgroundSubagents &&
                 props.parts.some(
                   (x) =>
-                    x.type === "tool" &&
-                    x.tool === "task" &&
+                    isTaskDisplay(x) &&
                     x.state.status === "running" &&
                     x.state.metadata?.background !== true,
                 )
@@ -1701,7 +1699,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
 
 function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMessage }) {
   const ctx = use()
-  const display = createMemo(() => toolDisplay(props.part.tool))
+  const display = createMemo(() => toolDisplay(props.part.tool, toolMetadata(props.part)))
 
   // Hide tool if showDetails is false and tool completed successfully
   const shouldHide = createMemo(() => {
@@ -1712,7 +1710,7 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
   const toolprops = {
     get metadata() {
-      return props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {})
+      return toolMetadata(props.part)
     },
     get input() {
       return props.part.state.input ?? {}
@@ -2644,8 +2642,24 @@ const toolDisplays = new Set([
   "execute",
 ])
 
-export function toolDisplay(tool: string) {
-  return toolDisplays.has(tool) ? tool : "generic"
+export function toolDisplay(tool: string, metadata: Record<string, unknown> = {}) {
+  if (toolDisplays.has(tool)) return tool
+  const model = recordValue(metadata.model)
+  if (
+    stringValue(metadata.parentSessionId) &&
+    stringValue(metadata.sessionId) &&
+    stringValue(model?.providerID) &&
+    stringValue(model?.modelID)
+  ) return "task"
+  return "generic"
+}
+
+export function isTaskDisplay(part: Part): part is ToolPart {
+  return part.type === "tool" && toolDisplay(part.tool, toolMetadata(part)) === "task"
+}
+
+function toolMetadata(part: ToolPart) {
+  return part.state.status === "pending" ? {} : (part.state.metadata ?? {})
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
