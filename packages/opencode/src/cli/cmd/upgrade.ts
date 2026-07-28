@@ -1,8 +1,8 @@
 import type { Argv } from "yargs"
 import { UI } from "../ui"
 import * as prompts from "@clack/prompts"
-import { Installation } from "../../installation"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
+import { Installation, ManagedUpgradeMessage } from "../../installation"
+import { isManagedDistribution, InstallationVersion } from "@opencode-ai/core/installation/version"
 
 export const UpgradeCommand = {
   command: "upgrade [target]",
@@ -20,7 +20,12 @@ export const UpgradeCommand = {
         choices: ["curl", "npm", "pnpm", "bun", "brew", "choco", "scoop"],
       })
   },
-  handler: async (args: { target?: string; method?: string }) => {
+  handler: async (args: { target?: string; method?: string }, version = InstallationVersion) => {
+    if (isManagedDistribution(version)) {
+      prompts.log.info(ManagedUpgradeMessage)
+      return
+    }
+
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()
@@ -45,13 +50,13 @@ export const UpgradeCommand = {
     prompts.log.info("Using method: " + method)
     const target = args.target ? args.target.replace(/^v/, "") : await Installation.latest()
 
-    if (InstallationVersion === target) {
+    if (version === target) {
       prompts.log.warn(`opencode upgrade skipped: ${target} is already installed`)
       prompts.outro("Done")
       return
     }
 
-    prompts.log.info(`From ${InstallationVersion} → ${target}`)
+    prompts.log.info(`From ${version} → ${target}`)
     const spinner = prompts.spinner()
     spinner.start("Upgrading...")
     const err = await Installation.upgrade(method, target).catch((err) => err)

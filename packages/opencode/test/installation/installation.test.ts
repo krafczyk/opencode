@@ -6,7 +6,7 @@ import { Effect, Layer, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Installation } from "../../src/installation"
-import { InstallationChannel } from "@opencode-ai/core/installation/version"
+import { InstallationChannel, isManagedDistribution } from "@opencode-ai/core/installation/version"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { testEffect } from "../lib/effect"
 
@@ -67,6 +67,18 @@ function testLayer(
 }
 
 describe("installation", () => {
+  describe("managed distributions", () => {
+    testEffect(Layer.empty).effect("identifies only MkChad release versions as managed", () =>
+      Effect.sync(() => {
+        expect(isManagedDistribution("1.18.3-mkchad.6")).toBe(true)
+        expect(isManagedDistribution("1.18.3")).toBe(false)
+        expect(isManagedDistribution("local")).toBe(false)
+        expect(isManagedDistribution("1.18.3-beta.1")).toBe(false)
+        expect(isManagedDistribution("1.18.3-mkchadness.1")).toBe(false)
+      }),
+    )
+  })
+
   describe("latest", () => {
     testEffect(testLayer(() => jsonResponse({ tag_name: "v1.2.3" }))).effect(
       "reads release version from GitHub releases",
