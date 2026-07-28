@@ -64,6 +64,74 @@ nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev
 > [!TIP]
 > Remove versions older than 0.1.x before installing.
 
+### MkChad Linux Release Packages
+
+The MkChad fork publishes direct npm tarballs only through the
+[MkChad GitHub Releases](https://github.com/krafczyk/opencode/releases) page.
+Each `v<version>` release contains exactly these assets:
+
+- `opencode-ai-<version>-linux-x64.tgz`
+- `opencode-ai-<version>-linux-arm64.tgz`
+- `SHA256SUMS`
+
+These packages support glibc Linux x64 and ARM64 only. The `linux-x64` package
+uses AVX2 and is not a baseline x64 build. Both packages include the embedded
+web client and MkChad fork behavior, expose `opencode` through npm global
+installation, and refuse installation on another operating system or CPU.
+
+Install a reviewed release only after verifying its checksum. Select the asset
+for the host architecture:
+
+```bash
+VERSION=1.18.3-mkchad.6
+BASE="https://github.com/krafczyk/opencode/releases/download/v$VERSION"
+curl --fail --location --remote-name "$BASE/SHA256SUMS"
+curl --fail --location --remote-name "$BASE/opencode-ai-$VERSION-linux-x64.tgz"
+sha256sum --check --ignore-missing SHA256SUMS
+npm install --global "./opencode-ai-$VERSION-linux-x64.tgz"
+opencode --version
+```
+
+Use the `linux-arm64` filename instead on ARM64. MkChad packages never check
+for or install an upstream replacement. `opencode upgrade` instead directs
+users to a reviewed GitHub Release or their managed MkChad container update.
+
+#### Release Administration
+
+`MkChad release packages` has two paths. A manual `workflow_dispatch` rehearsal
+accepts a dev-reachable ref and a MkChad version, then runs the same validation,
+native x64/ARM64 build, direct npm installation, version, and managed-upgrade
+refusal checks as a release. It never creates a release. Only a pushed tag
+matching `v<major>.<minor>.<patch>-mkchad.<revision>` can enter publication.
+That tag must resolve to the checked-out commit and be reachable from `dev`.
+
+Before the first tag, repository administrators must enable immutable GitHub
+Releases, protect `dev`, and configure a tag ruleset that restricts MkChad
+release tags to authorized maintainers. They must also create the protected
+`mkchad-release` environment with the required reviewers. Add an environment
+secret named `MKCHAD_RELEASE_ADMIN_TOKEN` containing a fine-grained token limited
+to this repository with only Administration read permission. GitHub requires
+that permission to read immutable-release settings; the workflow uses the token
+only for that preflight and uses its scoped `GITHUB_TOKEN` to publish. The
+workflow cannot create or modify repository protections. Once GitHub publishes
+the draft, immutable-release protection locks the release assets and associated
+tag, and the workflow verifies the published release's immutable status. If
+GitHub displays an automatic release attestation, it is GitHub platform
+metadata; this workflow does not request or create workflow artifact
+attestations. It uses no npm registry credentials.
+
+Runs sharing a ref are deliberately not cancelled. If a run stops after draft
+creation, do not rerun the tag: the existing release or draft blocks the retry.
+An authorized maintainer must inspect the draft tag, target commit, exact three
+asset names, and downloaded checksums. After that explicit reconciliation, they
+may publish the verified draft manually or deliberately delete it before a clean
+rerun. The workflow never deletes or adopts an interrupted draft.
+
+Native GitHub-hosted `ubuntu-24.04` and `ubuntu-24.04-arm` smoke tests are the
+current prepublication gate. A pinned Fedora 43 container smoke is deferred to
+U4/U5, where its image digest and container runtime contract can be reviewed
+with the container adoption work instead of adding unpinned provisioning here.
+
 ### Desktop App (BETA)
 
 OpenCode is also available as a desktop application. Download directly from the [releases page](https://github.com/anomalyco/opencode/releases) or [opencode.ai/download](https://opencode.ai/download).
