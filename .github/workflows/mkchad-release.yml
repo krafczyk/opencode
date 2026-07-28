@@ -1,0 +1,331 @@
+name: MkChad release packages
+run-name: "${{ github.event_name == 'push' && format('MkChad release {0}', github.ref_name) || format('MkChad rehearsal {0}', inputs.version) }}"
+
+on:
+  push:
+    tags:
+      - "v*-mkchad.*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit SHA or dev-reachable ref to rehearse; this never publishes"
+        required: true
+        default: "dev"
+        type: string
+      version:
+        description: "MkChad version without v, for example 1.18.3-mkchad.6"
+        required: true
+        type: string
+
+concurrency:
+  # Preserve interrupted runs for explicit draft reconciliation; never cancel a release run.
+  group: "${{ github.workflow }}-${{ github.event_name == 'push' && github.ref || inputs.ref }}"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.identity.outputs.commit }}
+      publish: ${{ steps.identity.outputs.publish }}
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - name: Checkout triggered source
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.ref }}
+
+      - name: Verify source identity
+        id: identity
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$INPUT_VERSION"
+          publish=false
+
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            [[ "$GITHUB_REF" == "refs/tags/$tag" ]]
+            [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-mkchad\.(0|[1-9][0-9]*)$ ]] || {
+              echo "MkChad release tags must match v<major>.<minor>.<patch>-mkchad.<revision>"
+              exit 1
+            }
+            version="${tag#v}"
+            tag_commit="$(git rev-parse --verify "refs/tags/$tag^{}")"
+            [[ "$(git rev-parse HEAD)" == "$tag_commit" ]] || {
+              echo "checked-out commit does not equal the peeled tag commit"
+              exit 1
+            }
+            git fetch --no-tags origin "+refs/heads/dev:refs/remotes/origin/dev"
+            git merge-base --is-ancestor "$tag_commit" origin/dev || {
+              echo "tagged commit must be reachable from protected dev"
+              exit 1
+            }
+            publish=true
+          else
+            [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-mkchad\.(0|[1-9][0-9]*)$ ]] || {
+              echo "rehearsal version must match <major>.<minor>.<patch>-mkchad.<revision>"
+              exit 1
+            }
+            tag="rehearsal-$GITHUB_RUN_ID"
+            tag_commit="$(git rev-parse --verify "$INPUT_REF^{commit}")"
+            [[ "$(git rev-parse HEAD)" == "$tag_commit" ]] || {
+              echo "checked-out rehearsal commit does not equal the requested ref"
+              exit 1
+            }
+            git fetch --no-tags origin "+refs/heads/dev:refs/remotes/origin/dev"
+            git merge-base --is-ancestor "$tag_commit" origin/dev || {
+              echo "rehearsal commit must be reachable from dev"
+              exit 1
+            }
+          fi
+
+          {
+            echo "commit=$tag_commit"
+            echo "publish=$publish"
+            echo "tag=$tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  package:
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+    steps:
+      - name: Checkout verified commit
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Build the native package
+        working-directory: packages/opencode
+        env:
+          OPENCODE_VERSION: ${{ needs.validate.outputs.version }}
+        run: bun run script/build.ts --single --skip-install
+
+      - name: Pack and smoke-test the direct npm tarball
+        working-directory: packages/opencode
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="opencode-ai-$VERSION-$TARGET.tgz"
+          output_dir="$RUNNER_TEMP/mkchad-release"
+          tarball="$output_dir/$asset"
+          prefix="$RUNNER_TEMP/npm-prefix"
+
+          bun run script/package-mkchad-release.ts \
+            --build-dir "dist/opencode-$TARGET" \
+            --output-dir "$output_dir" \
+            --target "$TARGET" \
+            --version "$VERSION"
+          test -f "$tarball"
+          npm install --global --prefix "$prefix" --ignore-scripts "$tarball"
+          test "$("$prefix/bin/opencode" --version)" = "$VERSION"
+
+          # This command must return before any registry lookup or package-manager replacement.
+          managed_output="$("$prefix/bin/opencode" upgrade 9.9.9 --method npm 2>&1)"
+          [[ "$managed_output" == *"MkChad manages this OpenCode installation"* ]]
+
+      - name: Upload verified package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mkchad-release-${{ matrix.target }}
+          path: ${{ runner.temp }}/mkchad-release/opencode-ai-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    needs:
+      - validate
+      - package
+    # Manual rehearsals exercise every preceding gate but can never enter publication.
+    if: github.event_name == 'push' && needs.validate.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    environment:
+      name: mkchad-release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the verified release tag
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.tag }}
+
+      - name: Reverify the release tag after approval
+        env:
+          COMMIT: ${{ needs.validate.outputs.commit }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$COMMIT" ]]
+          [[ "$(git rev-parse "refs/tags/$TAG^{}")" == "$COMMIT" ]]
+
+      - name: Download the verified x64 package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mkchad-release-linux-x64
+          path: ${{ runner.temp }}/mkchad-artifacts/linux-x64
+
+      - name: Download the verified ARM64 package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: mkchad-release-linux-arm64
+          path: ${{ runner.temp }}/mkchad-artifacts/linux-arm64
+
+      - name: Verify the complete asset set and generate checksums
+        id: assets
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/mkchad-artifacts"
+          asset_dir="$RUNNER_TEMP/mkchad-release-assets"
+          x64="opencode-ai-$VERSION-linux-x64.tgz"
+          arm64="opencode-ai-$VERSION-linux-arm64.tgz"
+          mkdir -p "$asset_dir"
+
+          mapfile -t actual < <(find "$root" -type f -printf '%f\n' | LC_ALL=C sort)
+          expected=("$arm64" "$x64")
+          if [[ "${actual[*]}" != "${expected[*]}" ]]; then
+            printf 'expected assets: %s\n' "${expected[*]}"
+            printf 'actual assets: %s\n' "${actual[*]:-<none>}"
+            exit 1
+          fi
+
+          mv "$root/linux-x64/$x64" "$asset_dir/$x64"
+          mv "$root/linux-arm64/$arm64" "$asset_dir/$arm64"
+          (
+            cd "$asset_dir"
+            sha256sum "$x64" "$arm64" | LC_ALL=C sort > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+          {
+            echo "directory=$asset_dir"
+            echo "x64=$x64"
+            echo "arm64=$arm64"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify immutable GitHub Releases are enabled
+        env:
+          GH_TOKEN: ${{ secrets.MKCHAD_RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$GH_TOKEN" ]] || {
+            echo "mkchad-release environment secret MKCHAD_RELEASE_ADMIN_TOKEN is required"
+            exit 1
+          }
+          enabled="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
+          [[ "$enabled" == "true" ]] || {
+            echo "repository immutable GitHub Releases must be enabled before publication"
+            exit 1
+          }
+
+      - name: Refuse an existing release or draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          existing="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq ".[] | select(.tag_name == \"$TAG\") | .id")"
+          [[ -z "$existing" ]] || {
+            echo "release or draft already exists for $TAG; reconcile it explicitly before retrying"
+            exit 1
+          }
+
+      - name: Create a complete draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            "${{ steps.assets.outputs.directory }}/${{ steps.assets.outputs.x64 }}" \
+            "${{ steps.assets.outputs.directory }}/${{ steps.assets.outputs.arm64 }}" \
+            "${{ steps.assets.outputs.directory }}/SHA256SUMS" \
+            --draft \
+            --title "$TAG" \
+            --target "$COMMIT" \
+            --verify-tag \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Verify the draft release before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          ASSET_DIR: ${{ steps.assets.outputs.directory }}
+          X64: ${{ steps.assets.outputs.x64 }}
+          ARM64: ${{ steps.assets.outputs.arm64 }}
+        run: |
+          set -euo pipefail
+          draft="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,tagName --jq '[.isDraft, .tagName] | @tsv')"
+          IFS=$'\t' read -r is_draft tag_name <<< "$draft"
+          [[ "$is_draft" == "true" && "$tag_name" == "$TAG" ]] || {
+            echo "draft identity does not match the verified tag"
+            exit 1
+          }
+
+          mapfile -t actual < <(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+          expected=("SHA256SUMS" "$ARM64" "$X64")
+          [[ "${actual[*]}" == "${expected[*]}" ]] || {
+            printf 'expected draft assets: %s\n' "${expected[*]}"
+            printf 'actual draft assets: %s\n' "${actual[*]:-<none>}"
+            exit 1
+          }
+
+          draft_dir="$RUNNER_TEMP/mkchad-draft-assets"
+          mkdir -p "$draft_dir"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir" --pattern "$X64"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir" --pattern "$ARM64"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$draft_dir" --pattern "SHA256SUMS"
+          cmp -- "$ASSET_DIR/SHA256SUMS" "$draft_dir/SHA256SUMS"
+          (
+            cd "$draft_dir"
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Publish the verified draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      - name: Verify the published release is immutable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '[.draft, .immutable, .tag_name] | @tsv')"
+          IFS=$'\t' read -r draft immutable tag_name <<< "$release"
+          [[ "$draft" == "false" && "$immutable" == "true" && "$tag_name" == "$TAG" ]] || {
+            echo "published release did not become immutable"
+            exit 1
+          }
