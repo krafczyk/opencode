@@ -371,6 +371,7 @@ function ProviderConnection(props: {
   const dialog = useDialog()
   const serverSync = useServerSync()
   const serverSDK = useServerSDK()
+  const queryClient = useQueryClient()
   const params = useParams()
   const language = useLanguage()
   const settings = useSettings()
