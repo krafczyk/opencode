@@ -11,6 +11,15 @@ export function toolDisplay(tool: string, metadata: Record<string, unknown> = {}
   return "generic"
 }
 
+export function taskRoleName(role: unknown) {
+  if (typeof role !== "string") return
+  const name = role.split(".").at(-1)
+  if (!name) return
+  const words = name.split("-")
+  if (words.some((word) => !word)) return
+  return words.map((word) => `${word[0]!.toUpperCase()}${word.slice(1)}`).join(" ")
+}
+
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return
   return value as Record<string, unknown>
