@@ -56,11 +56,14 @@ jobs:
             echo "checked-out commit does not equal the peeled tag commit"
             exit 1
           }
-          git fetch --no-tags origin "+refs/heads/mkchad:refs/remotes/origin/mkchad"
-          git merge-base --is-ancestor "$tag_commit" origin/mkchad || {
-            echo "tagged commit must be reachable from protected mkchad"
+          git fetch --no-tags origin \
+            "+refs/heads/mkchad:refs/remotes/origin/mkchad" \
+            "+refs/heads/mkchad-v1:refs/remotes/origin/mkchad-v1"
+          if ! git merge-base --is-ancestor "$tag_commit" origin/mkchad && \
+             ! git merge-base --is-ancestor "$tag_commit" origin/mkchad-v1; then
+            echo "tagged commit must be reachable from protected mkchad or mkchad-v1"
             exit 1
-          }
+          fi
 
           {
             echo "commit=$tag_commit"
