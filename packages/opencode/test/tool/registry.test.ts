@@ -508,6 +508,58 @@ describe("tool.registry", () => {
     }),
   )
 
+  it.instance("exposes native prompt-part resolution to plugin tools", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const customTools = path.join(test.directory, ".opencode", "tools")
+      const pluginTool = pathToFileURL(path.resolve(import.meta.dir, "../../../plugin/src/tool.ts")).href
+      yield* Effect.promise(() => fs.mkdir(customTools, { recursive: true }))
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(customTools, "prompt-parts.ts"),
+          [
+            `import { tool } from ${JSON.stringify(pluginTool)}`,
+            "export default tool({",
+            "  description: 'prompt parts tool',",
+            "  args: {},",
+            "  execute: async (_args, context) => JSON.stringify(await context.resolvePromptParts('@general')),",
+            "})",
+            "",
+          ].join("\n"),
+        ),
+      )
+
+      const registry = yield* ToolRegistry.Service
+      const loaded = (yield* registry.all()).find((tool) => tool.id === "prompt-parts")
+      if (!loaded) throw new Error("custom prompt-parts tool was not loaded")
+      const agents = yield* Agent.Service
+      const result = yield* loaded.execute({}, {
+        sessionID: SessionID.make("ses_test"),
+        messageID: MessageID.make("msg_test"),
+        agent: (yield* agents.defaultInfo()).name,
+        abort: new AbortController().signal,
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+        extra: {
+          promptOps: {
+            cancel: () => Effect.void,
+            resolvePromptParts: (template: string) => Effect.succeed([
+              { type: "text" as const, text: template },
+              { type: "agent" as const, name: "general" },
+            ]),
+            prompt: () => Effect.die("unused prompt operation"),
+          },
+        },
+      } satisfies Tool.Context)
+
+      expect(JSON.parse(result.output)).toEqual([
+        { type: "text", text: "@general" },
+        { type: "agent", name: "general" },
+      ])
+    }),
+  )
+
   it.instance("loads legacy JSON-schema-shaped custom tools with wire schema", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
