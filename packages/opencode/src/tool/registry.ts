@@ -9,7 +9,7 @@ import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
-import { TaskTool } from "./task"
+import { TaskTool, type TaskPromptOps } from "./task"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -140,12 +140,16 @@ const layer = Layer.effect(
                 // Bridge the host's Effect-based `ask` into a Promise-returning
                 // function for the plugin to make sure context persists
                 const bridge = yield* EffectBridge.make()
+                const promptOps = toolCtx.extra?.promptOps
                 const pluginCtx: PluginToolContext = {
                   ...toolCtx,
                   metadata: (input) => {
                     bridge.fork(toolCtx.metadata(input))
                   },
                   ask: (req) => bridge.promise(toolCtx.ask(req)),
+                  resolvePromptParts: hasPromptResolver(promptOps)
+                    ? (template) => bridge.promise(promptOps.resolvePromptParts(template))
+                    : undefined,
                   directory: ctx.directory,
                   worktree: ctx.worktree,
                 }
@@ -352,6 +356,11 @@ function isZodType(value: unknown): value is z.ZodType {
 
 function isPluginTool(value: unknown): value is ToolDefinition {
   return typeof value === "object" && value !== null && "args" in value && "description" in value && "execute" in value
+}
+
+function hasPromptResolver(value: unknown): value is Pick<TaskPromptOps, "resolvePromptParts"> {
+  return typeof value === "object" && value !== null && "resolvePromptParts" in value
+    && typeof value.resolvePromptParts === "function"
 }
 
 function isJsonSchemaDefinition(value: unknown): value is JSONSchema7Definition {
