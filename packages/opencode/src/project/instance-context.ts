@@ -22,3 +22,12 @@ export function containsPath(filepath: string, ctx: InstanceContext): boolean {
   if (ctx.worktree === "/") return false
   return FSUtil.contains(ctx.worktree, filepath)
 }
+
+/**
+ * Check whether a path is within the active directory for permission-sensitive operations.
+ *
+ * Unlike `containsPath`, this does not treat the broader repository worktree as internal.
+ */
+export function containsActiveDirectoryPath(filepath: string, ctx: InstanceContext): boolean {
+  return FSUtil.contains(ctx.directory, filepath)
+}

@@ -184,6 +184,22 @@ describe("tool.read external_directory permission", () => {
     }),
   )
 
+  it.live("asks for external_directory before read permission for a sibling checkout file", () =>
+    Effect.gen(function* () {
+      const worktree = yield* tmpdirScoped({ git: true })
+      const directory = path.join(worktree, "active")
+      const sibling = path.join(worktree, "sibling")
+      yield* git(worktree, ["worktree", "add", "--detach", sibling, "HEAD"])
+      const file = path.join(sibling, "external.txt")
+      yield* put(file, "external")
+
+      const { items, next } = asks()
+      yield* exec(directory, { filePath: file }, next)
+
+      expect(items.map((item) => item.permission)).toEqual(["external_directory", "read"])
+    }),
+  )
+
   if (process.platform === "win32") {
     it.live("normalizes read permission paths on Windows", () =>
       Effect.gen(function* () {

@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm"
 import { sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core"
 import { Timestamps } from "../database/schema.sql"
 import { ProjectV2 } from "../project"
@@ -12,9 +13,18 @@ export const PermissionTable = sqliteTable(
       .$type<ProjectV2.ID>()
       .notNull()
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    directory: text(),
     action: text().notNull(),
     resource: text().notNull(),
     ...Timestamps,
   },
-  (table) => [uniqueIndex("permission_project_action_resource_idx").on(table.project_id, table.action, table.resource)],
+  (table) =>
+    [
+      uniqueIndex("permission_project_directory_action_resource_idx").on(
+        table.project_id,
+        sql`coalesce(${table.directory}, '')`,
+        table.action,
+        table.resource,
+      ),
+    ],
 )

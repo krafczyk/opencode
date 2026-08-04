@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { and, eq, sql } from "drizzle-orm"
+import { and, eq, isNull, sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProjectDirectories } from "@opencode-ai/core/project/directories"
@@ -248,6 +248,9 @@ const layer = Layer.effect(
                     .where(
                       and(
                         eq(PermissionTable.project_id, newID),
+                        permission.directory === null
+                          ? isNull(PermissionTable.directory)
+                          : eq(PermissionTable.directory, permission.directory),
                         eq(PermissionTable.action, permission.action),
                         eq(PermissionTable.resource, permission.resource),
                       ),

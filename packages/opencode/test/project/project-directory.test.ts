@@ -222,6 +222,7 @@ describe("Project directory persistence", () => {
       const sessionID = SessionSchema.ID.make("ses_directory_migration")
       const workspaceID = WorkspaceV2.ID.make("wrk_directory_migration")
       const permissionID = PermissionSaved.ID.make("per_directory_migration")
+      const targetPermissionID = PermissionSaved.ID.make("per_directory_migration_target")
       yield* Effect.promise(() =>
         $`git remote add origin git@github.com:project-directory-test/migration.git`.cwd(tmp).quiet(),
       )
@@ -267,6 +268,20 @@ describe("Project directory persistence", () => {
         .values({
           id: permissionID,
           project_id: original.project.id,
+          directory: "/project/a",
+          action: "bash",
+          resource: "*",
+          time_created: 1,
+          time_updated: 1,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(PermissionTable)
+        .values({
+          id: targetPermissionID,
+          project_id: remoteID,
+          directory: "/project/b",
           action: "bash",
           resource: "*",
           time_created: 1,
@@ -298,8 +313,17 @@ describe("Project directory persistence", () => {
         yield* db.select({ projectID: WorkspaceTable.project_id }).from(WorkspaceTable).where(eq(WorkspaceTable.id, workspaceID)).get(),
       ).toEqual({ projectID: remoteID })
       expect(
-        yield* db.select({ projectID: PermissionTable.project_id }).from(PermissionTable).where(eq(PermissionTable.id, permissionID)).get(),
-      ).toEqual({ projectID: remoteID })
+        yield* db
+          .select({ id: PermissionTable.id, projectID: PermissionTable.project_id, directory: PermissionTable.directory })
+          .from(PermissionTable)
+          .where(eq(PermissionTable.action, "bash"))
+          .all(),
+      ).toEqual(
+        [
+          { id: permissionID, projectID: remoteID, directory: "/project/a" },
+          { id: targetPermissionID, projectID: remoteID, directory: "/project/b" },
+        ].toSorted((a, b) => a.id.localeCompare(b.id)),
+      )
     }),
   )
 })

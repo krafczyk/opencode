@@ -90,6 +90,7 @@ export default {
         CREATE TABLE \`permission\` (
           \`id\` text PRIMARY KEY,
           \`project_id\` text NOT NULL,
+          \`directory\` text,
           \`action\` text NOT NULL,
           \`resource\` text NOT NULL,
           \`time_created\` integer NOT NULL,
@@ -241,7 +242,7 @@ export default {
       yield* tx.run(`CREATE UNIQUE INDEX \`event_aggregate_seq_idx\` ON \`event\` (\`aggregate_id\`,\`seq\`);`)
       yield* tx.run(`CREATE INDEX \`event_aggregate_type_seq_idx\` ON \`event\` (\`aggregate_id\`,\`type\`,\`seq\`);`)
       yield* tx.run(
-        `CREATE UNIQUE INDEX \`permission_project_action_resource_idx\` ON \`permission\` (\`project_id\`,\`action\`,\`resource\`);`,
+        `CREATE UNIQUE INDEX \`permission_project_directory_action_resource_idx\` ON \`permission\` (\`project_id\`,coalesce("directory", ''),\`action\`,\`resource\`);`,
       )
       yield* tx.run(
         `CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`,\`time_created\`,\`id\`);`,

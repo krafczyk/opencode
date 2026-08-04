@@ -16,6 +16,7 @@ import contextEpochAgentMigration from "@opencode-ai/core/database/migration/202
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
 import directoryClassificationMigration from "@opencode-ai/core/database/migration/20260804040958_directory_classification"
+import permissionDirectoryMigration from "@opencode-ai/core/database/migration/20260804055123_permission-directory"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -60,6 +61,47 @@ describe("DatabaseMigration", () => {
           { directory: "/managed", kind: "managed", strategy: "git_worktree", source_directory: null },
           { directory: "/ordinary", kind: "user", strategy: null, source_directory: null },
         ])
+      }),
+    )
+  })
+
+  test("keeps legacy saved approvals project scoped", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE permission (id text PRIMARY KEY, project_id text NOT NULL, action text NOT NULL, resource text NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO permission (id, project_id, action, resource, time_created, time_updated) VALUES ('psv_legacy', 'project', 'external_directory', '/external/*', 1, 1)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [permissionDirectoryMigration])
+
+        expect(yield* db.all(sql`SELECT project_id, directory, action, resource FROM permission`)).toEqual([
+          { project_id: "project", directory: null, action: "external_directory", resource: "/external/*" },
+        ])
+        expect(
+          yield* db
+            .run(
+              sql`INSERT INTO permission (id, project_id, directory, action, resource, time_created, time_updated) VALUES ('psv_legacy_duplicate', 'project', NULL, 'external_directory', '/external/*', 1, 1)`,
+            )
+            .pipe(Effect.flip),
+        ).toBeDefined()
+
+        yield* db.run(
+          sql`INSERT INTO permission (id, project_id, directory, action, resource, time_created, time_updated) VALUES ('psv_a', 'project', '/a', 'external_directory', '/external/*', 1, 1)`,
+        )
+        yield* db.run(
+          sql`INSERT INTO permission (id, project_id, directory, action, resource, time_created, time_updated) VALUES ('psv_b', 'project', '/b', 'external_directory', '/external/*', 1, 1)`,
+        )
+        expect(
+          yield* db
+            .run(
+              sql`INSERT INTO permission (id, project_id, directory, action, resource, time_created, time_updated) VALUES ('psv_a_duplicate', 'project', '/a', 'external_directory', '/external/*', 1, 1)`,
+            )
+            .pipe(Effect.flip),
+        ).toBeDefined()
       }),
     )
   })

@@ -5,6 +5,7 @@ import { Cause, Effect, Exit, Layer } from "effect"
 import type * as Scope from "effect/Scope"
 import os from "os"
 import path from "path"
+import fs from "node:fs/promises"
 import { Config } from "@/config/config"
 import { Shell } from "@opencode-ai/core/shell"
 import { ShellTool } from "../../src/tool/shell"
@@ -155,9 +156,10 @@ const withShell = <A, E, R>(item: { label: string; shell: string }, self: Effect
 const each = (
   name: string,
   fn: (item: { label: string; shell: string }) => Effect.Effect<void, unknown, ShellTestServices>,
+  options?: { timeout?: number },
 ) => {
   for (const item of shells) {
-    it.live(`${name} [${item.label}]`, () => withShell(item, fn(item)))
+    it.live(`${name} [${item.label}]`, () => withShell(item, fn(item)), options)
   }
 }
 
@@ -779,6 +781,56 @@ describe("tool.shell permissions", () => {
         }),
       )
     }),
+  )
+
+  each(
+    "asks for external_directory before bash permission for a sibling checkout workdir",
+    () =>
+      Effect.gen(function* () {
+        const worktree = yield* tmpdirScoped({ git: true })
+        const directory = path.join(worktree, "active")
+        const sibling = path.join(worktree, "sibling")
+        yield* Effect.promise(async () => {
+          const code = await Bun.spawn(["git", "worktree", "add", "--detach", sibling, "HEAD"], { cwd: worktree }).exited
+          if (code !== 0) throw new Error("failed to create sibling checkout")
+        })
+        yield* Effect.promise(() => fs.mkdir(directory, { recursive: true }))
+        yield* Effect.promise(() => Bun.write(path.join(directory, "internal.txt"), "internal"))
+        yield* Effect.promise(() => Bun.write(path.join(sibling, "external.txt"), "external"))
+        yield* runIn(
+          directory,
+          Effect.gen(function* () {
+            const requests: Array<Omit<PermissionV1.Request, "id" | "sessionID" | "tool">> = []
+            yield* run(
+              {
+                command: "cat internal.txt",
+              },
+              capture(requests),
+            )
+            yield* run(
+              {
+                command: `cat ${path.join(sibling, "external.txt")}`,
+              },
+              capture(requests),
+            )
+            yield* run(
+              {
+                command: "echo ok",
+                workdir: sibling,
+              },
+              capture(requests),
+            )
+            expect(requests.map((request) => request.permission)).toEqual([
+              "bash",
+              "external_directory",
+              "bash",
+              "external_directory",
+              "bash",
+            ])
+          }),
+        )
+      }),
+    { timeout: 15_000 },
   )
 
   if (process.platform === "win32") {

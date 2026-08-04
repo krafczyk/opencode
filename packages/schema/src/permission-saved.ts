@@ -11,9 +11,11 @@ export const ID = Schema.String.pipe(
 )
 export type ID = typeof ID.Type
 
+/** A saved approval; omitted directory retains legacy project-wide applicability. */
 export const Info = Schema.Struct({
   id: ID,
   projectID: ProjectID,
+  directory: Schema.String.pipe(Schema.optional),
   action: Schema.String,
   resource: Schema.String,
 }).annotate({ identifier: "PermissionSaved.Info" })

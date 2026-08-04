@@ -1,6 +1,6 @@
 export * as PermissionSaved from "./saved"
 
-import { eq } from "drizzle-orm"
+import { and, eq, isNull, or } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
@@ -14,21 +14,28 @@ export type ID = typeof ID.Type
 export const Info = PermissionSaved.Info
 export type Info = typeof Info.Type
 
+/** Filters saved approvals by project and, when supplied, active directory plus legacy project-wide rows. */
 export const ListInput = Schema.Struct({
   projectID: ProjectV2.ID.pipe(Schema.optional),
+  directory: Schema.String.pipe(Schema.optional),
 }).annotate({ identifier: "PermissionSaved.ListInput" })
 export type ListInput = typeof ListInput.Type
 
+/** Persists new approvals for one established project directory. */
 export const AddInput = Schema.Struct({
   projectID: ProjectV2.ID,
+  directory: Schema.String,
   action: Schema.String,
   resources: Schema.Array(Schema.String),
 }).annotate({ identifier: "PermissionSaved.AddInput" })
 export type AddInput = typeof AddInput.Type
 
 export interface Interface {
+  /** Lists approvals applicable to the requested project and optional active directory. */
   readonly list: (input?: ListInput) => Effect.Effect<ReadonlyArray<Info>>
+  /** Saves each resource for the supplied project directory. */
   readonly add: (input: AddInput) => Effect.Effect<void>
+  /** Removes one saved approval by identifier. */
   readonly remove: (id: ID) => Effect.Effect<void>
 }
 
@@ -43,11 +50,26 @@ const layer = Layer.effect(
       const rows = yield* db
         .select()
         .from(PermissionTable)
-        .where(input?.projectID ? eq(PermissionTable.project_id, input.projectID) : undefined)
+        .where(
+          input?.projectID
+            ? input.directory
+              ? and(
+                  eq(PermissionTable.project_id, input.projectID),
+                  or(eq(PermissionTable.directory, input.directory), isNull(PermissionTable.directory)),
+                )
+              : eq(PermissionTable.project_id, input.projectID)
+            : undefined,
+        )
         .all()
         .pipe(Effect.orDie)
       return rows.map(
-        (row): Info => ({ id: row.id, projectID: row.project_id, action: row.action, resource: row.resource }),
+        (row): Info => ({
+          id: row.id,
+          projectID: row.project_id,
+          ...(row.directory ? { directory: row.directory } : {}),
+          action: row.action,
+          resource: row.resource,
+        }),
       )
     })
 
@@ -59,6 +81,7 @@ const layer = Layer.effect(
           input.resources.map((resource) => ({
             id: ID.create(),
             project_id: input.projectID,
+            directory: input.directory,
             action: input.action,
             resource,
           })),

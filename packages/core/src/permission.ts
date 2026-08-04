@@ -129,7 +129,7 @@ const layer = Layer.effect(
     )
 
     const savedRules = EffectRuntime.fnUntraced(function* () {
-      return (yield* saved.list({ projectID: location.project.id })).map(
+      return (yield* saved.list({ projectID: location.project.id, directory: location.directory })).map(
         (item): Permission.Rule => ({ action: item.action, resource: item.resource, effect: "allow" }),
       )
     })
@@ -250,6 +250,7 @@ const layer = Layer.effect(
           if (input.reply === "always" && existing.request.save?.length) {
             yield* saved.add({
               projectID: location.project.id,
+              directory: location.directory,
               action: existing.request.action,
               resources: existing.request.save,
             })

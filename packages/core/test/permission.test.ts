@@ -233,7 +233,7 @@ describe("PermissionV2", () => {
     Effect.gen(function* () {
       yield* setup()
       const saved = yield* PermissionSaved.Service
-      yield* saved.add({ projectID: Project.ID.global, action: "bash", resources: ["pwd"] })
+      yield* saved.add({ projectID: Project.ID.global, directory: "/project", action: "bash", resources: ["pwd"] })
 
       const service = yield* PermissionV2.Service
       expect(yield* service.ask(assertion({ action: "bash", resources: ["pwd"] }))).toEqual({
@@ -262,6 +262,48 @@ describe("PermissionV2", () => {
       yield* Fiber.join(fiber)
       expect(yield* service.list()).toEqual([])
       expect(yield* service.get(request.id)).toBeUndefined()
+    }),
+  )
+
+  it.effect("isolates saved approvals by directory while retaining legacy project approvals", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const saved = yield* PermissionSaved.Service
+      yield* saved.add({
+        projectID: Project.ID.global,
+        directory: "/project",
+        action: "external_directory",
+        resources: ["/external/*"],
+      })
+
+      const service = yield* PermissionV2.Service
+      expect(
+        yield* service.ask(assertion({ action: "external_directory", resources: ["/external/file.txt"] })),
+      ).toEqual({ id: PermissionV2.ID.create("per_test"), effect: "allow" })
+      expect(yield* saved.list({ projectID: Project.ID.global, directory: "/other" })).toEqual([])
+
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(PermissionTable)
+        .values({
+          id: PermissionSaved.ID.create(),
+          project_id: Project.ID.global,
+          directory: null,
+          action: "external_directory",
+          resource: "/legacy/*",
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      const inOther = yield* saved.list({ projectID: Project.ID.global, directory: "/other" })
+      expect(inOther).toEqual([
+        {
+          id: inOther[0]!.id,
+          projectID: Project.ID.global,
+          action: "external_directory",
+          resource: "/legacy/*",
+        },
+      ])
     }),
   )
 
@@ -303,10 +345,12 @@ describe("PermissionV2", () => {
       const { db } = yield* Database.Service
       expect(
         yield* db.select().from(PermissionTable).where(eq(PermissionTable.project_id, Project.ID.global)).all(),
-      ).toMatchObject([{ action: "read", resource: "src/*" }])
+      ).toMatchObject([{ directory: "/project", action: "read", resource: "src/*" }])
       const saved = yield* PermissionSaved.Service
       const id = (yield* saved.list())[0]!.id
-      expect(yield* saved.list()).toEqual([{ id, projectID: Project.ID.global, action: "read", resource: "src/*" }])
+      expect(yield* saved.list()).toEqual([
+        { id, projectID: Project.ID.global, directory: "/project", action: "read", resource: "src/*" },
+      ])
       yield* service.assert(assertion({ id: PermissionV2.ID.create("per_next"), resources: ["src/next.ts"] }))
       yield* saved.remove(id)
       expect(yield* saved.list()).toEqual([])

@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "068a889a-1e61-4ac9-9ee8-8109e3ee4970",
+  "id": "b3016dda-fd52-4e1a-b77e-7d0c78957a96",
   "prevIds": [
-    "f14a9b18-8207-487e-a3d3-227e629ba9ad"
+    "068a889a-1e61-4ac9-9ee8-8109e3ee4970"
   ],
   "ddl": [
     {
@@ -559,6 +559,16 @@
       "default": null,
       "generated": null,
       "name": "project_id",
+      "entityType": "columns",
+      "table": "permission"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "directory",
       "entityType": "columns",
       "table": "permission"
     },
@@ -1918,6 +1928,10 @@
           "isExpression": false
         },
         {
+          "value": "coalesce(\"directory\", '')",
+          "isExpression": true
+        },
+        {
           "value": "action",
           "isExpression": false
         },
@@ -1929,7 +1943,7 @@
       "isUnique": true,
       "where": null,
       "origin": "manual",
-      "name": "permission_project_action_resource_idx",
+      "name": "permission_project_directory_action_resource_idx",
       "entityType": "indexes",
       "table": "permission"
     },

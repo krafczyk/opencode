@@ -6,11 +6,14 @@ import { Effect } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import type { Tool } from "@/tool/tool"
 import { assertExternalDirectoryEffect } from "../../src/tool/external-directory"
+import { containsActiveDirectoryPath, containsPath } from "../../src/project/instance-context"
 import { Filesystem } from "@/util/filesystem"
 import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
+import { InstanceRef } from "@/effect/instance-ref"
+import type { InstanceContext } from "@/project/instance-context"
 
 const it = testEffect(LayerNode.compile(CrossSpawnSpawner.node))
 
@@ -58,6 +61,33 @@ describe("tool.assertExternalDirectory", () => {
       yield* assertExternalDirectoryEffect(ctx, path.join(test.directory, "file.txt"))
 
       expect(requests.length).toBe(0)
+    }),
+  )
+
+  it.live("treats a nested sibling checkout as external despite a shared worktree", () =>
+    Effect.gen(function* () {
+      const worktree = yield* tmpdirScoped({ git: true })
+      const directory = path.join(worktree, "active")
+      const sibling = path.join(worktree, "sibling")
+      yield* Effect.promise(async () => {
+        const code = await Bun.spawn(["git", "worktree", "add", "--detach", sibling, "HEAD"], { cwd: worktree }).exited
+        if (code !== 0) throw new Error("failed to create sibling checkout")
+      })
+      const { requests, ctx } = makeCtx()
+      const instance: InstanceContext = {
+        directory,
+        worktree,
+        project: {} as InstanceContext["project"],
+      }
+
+      expect(containsPath(sibling, instance)).toBe(true)
+      expect(containsActiveDirectoryPath(sibling, instance)).toBe(false)
+
+      yield* assertExternalDirectoryEffect(ctx, path.join(sibling, "file.txt")).pipe(
+        Effect.provideService(InstanceRef, instance),
+      )
+
+      expect(requests.find((request) => request.permission === "external_directory")).toBeDefined()
     }),
   )
 
