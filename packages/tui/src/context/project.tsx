@@ -43,15 +43,12 @@ export const { use: useProject, provider: ProjectProvider } = createSimpleContex
         sdk.client.path.get({ workspace }),
         sdk.client.project.current({ workspace }),
       ])
-      const directories = project.data?.id
-        ? await sdk.client.project.directories({ projectID: project.data.id, workspace })
-        : undefined
       if (version !== syncVersion) return
       batch(() => {
         setStore("instance", "path", reconcile(instancePath.data || defaultPath))
         setStore("project", "id", project.data?.id)
         setStore("project", "worktree", project.data?.worktree)
-        setStore("project", "mainDir", directories?.data?.findLast((item) => item.strategy === undefined)?.directory)
+        setStore("project", "mainDir", instancePath.data?.directory)
       })
     }
 

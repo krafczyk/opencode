@@ -151,13 +151,17 @@ export const {
       hydratingSessions.get(sessionID)?.parts.add(partID)
     }
 
-    function sessionListQuery(): { scope?: "project"; path?: string } {
+    function sessionListQuery(): { directory?: string; scope?: "project"; path?: string } {
       if (!kv.get("session_directory_filter_enabled", true)) return { scope: "project" }
       if (!project.data.instance.path.worktree || !project.data.instance.path.directory) return { scope: "project" }
+      const directory = project.data.instance.path.directory
+      const relative = path
+        .relative(path.resolve(project.data.instance.path.worktree), directory)
+        .replaceAll("\\", "/")
+      if (!relative) return { directory }
       return {
-        path: path
-          .relative(path.resolve(project.data.instance.path.worktree), project.data.instance.path.directory)
-          .replaceAll("\\", "/"),
+        directory,
+        path: relative,
       }
     }
 
@@ -278,6 +282,16 @@ export const {
         }
         case "session.updated": {
           const result = search(store.session, event.properties.info.id, (s) => s.id)
+          if (path.resolve(event.properties.info.directory) !== path.resolve(project.instance.directory())) {
+            if (!result.found) break
+            setStore(
+              "session",
+              produce((draft) => {
+                draft.splice(result.index, 1)
+              }),
+            )
+            break
+          }
           if (result.found) {
             setStore("session", result.index, reconcile(event.properties.info))
             break
@@ -293,7 +307,20 @@ export const {
 
         case "session.next.moved": {
           const result = search(store.session, event.properties.sessionID, (s) => s.id)
-          if (!result.found) break
+          if (path.resolve(event.properties.location.directory) !== path.resolve(project.instance.directory())) {
+            if (!result.found) break
+            setStore(
+              "session",
+              produce((draft) => {
+                draft.splice(result.index, 1)
+              }),
+            )
+            break
+          }
+          if (!result.found) {
+            void listSessions().then((sessions) => setStore("session", reconcile(sessions)))
+            break
+          }
           setStore(
             "session",
             result.index,

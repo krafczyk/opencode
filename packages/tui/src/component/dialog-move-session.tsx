@@ -22,6 +22,25 @@ import { useRoute } from "../context/route"
 export type MoveSessionSelection = { type: "directory"; directory: string; subdirectory: boolean } | { type: "new" }
 type ProjectDirectory = ProjectDirectories[number]
 
+/** Returns the explicitly selected session directory without allowing lookup state to redirect it. */
+export function moveSessionCurrentDirectory(input: {
+  current?: MoveSessionSelection
+  instanceDirectory?: string
+  replacementDirectory?: string
+}) {
+  return input.replacementDirectory ?? (input.current?.type === "directory" ? input.current.directory : input.instanceDirectory)
+}
+
+/** Labels managed move destinations by their persisted source when the server provides one. */
+export function moveDestinationCategory(
+  directory: { directory: string; kind: "user" | "managed"; sourceDirectory?: string },
+  currentDirectory?: string,
+) {
+  if (directory.directory === currentDirectory) return "Current"
+  if (directory.kind === "managed" && directory.sourceDirectory) return `Managed copy from ${directory.sourceDirectory}`
+  return "Other"
+}
+
 type DialogMoveSessionProps = {
   projectID: string
   current?: MoveSessionSelection
@@ -66,7 +85,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
         .catch(() => undefined),
   )
   const currentCheckout = createMemo(() => {
-    if (projectContext.project() === props.projectID) return projectContext.instance.path().worktree
+    if (projectContext.project() === props.projectID) return projectContext.instance.path().directory
     return loadedProject()
   })
 
@@ -95,8 +114,12 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
   // that fails after the list rendered keeps the list and its actions.
   const showError = createMemo(() => Boolean(loadError()) && !directoryData())
 
-  const currentDirectory = createMemo(
-    () => replacementCurrent() ?? (props.current?.type === "directory" ? props.current.directory : currentCheckout()),
+  const currentDirectory = createMemo(() =>
+    moveSessionCurrentDirectory({
+      replacementDirectory: replacementCurrent(),
+      current: props.current,
+      instanceDirectory: currentCheckout(),
+    }),
   )
   const currentRoot = createMemo<ProjectDirectory | undefined>(() => {
     if (showError()) return
@@ -176,7 +199,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
           directory: item.location,
           subdirectory: item.location !== item.root.directory,
         } as const,
-        category: item.root.directory === current ? "Current" : "Other",
+        category: moveDestinationCategory(item.root, current),
         titleWidth,
         truncateTitle: "left" as const,
       }
@@ -184,7 +207,6 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
   })
 
   const current = createMemo(() => {
-    if (directories.loading || loadedProject.loading) return
     const replacement = replacementCurrent()
     if (replacement) return { type: "directory", directory: replacement, subdirectory: false } as const
     return props.current

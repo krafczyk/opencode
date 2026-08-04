@@ -18,6 +18,7 @@ import {
   homeProjectDirectories,
   homeSessionServerStatus,
   latestRootSession,
+  projectForSession,
   toggleHomeProjectSelection,
 } from "./helpers"
 import { pathKey } from "@/utils/path-key"
@@ -151,6 +152,15 @@ describe("layout workspace helpers", () => {
     )
 
     expect(result?.id).toBe("workspace")
+  })
+
+  test("prefers a session's exact directory over shared project metadata", () => {
+    const projectA = { id: "project", worktree: "/checkout/a" }
+    const projectB = { id: "project", worktree: "/checkout/b" }
+
+    expect(projectForSession(session({ id: "b", directory: "/checkout/b", projectID: "project" }), [projectA, projectB])).toBe(
+      projectB,
+    )
   })
 
   test("detects project permissions with a filter", () => {

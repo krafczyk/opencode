@@ -88,6 +88,27 @@ describe("session.list", () => {
     { git: true },
   )
 
+  it.instance(
+    "keeps directory filtering exact when a checkout-root path is empty",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const checkoutA = path.join(test.directory, "checkout-a")
+        const checkoutB = path.join(test.directory, "checkout-b")
+        yield* Effect.promise(() => Promise.all([mkdir(checkoutA, { recursive: true }), mkdir(checkoutB, { recursive: true })]))
+
+        const inA = yield* withSession({ title: "a" }).pipe(provideInstance(checkoutA))
+        const inB = yield* withSession({ title: "b" }).pipe(provideInstance(checkoutB))
+        const ids = (yield* SessionNs.Service.use((session) => session.list({ directory: checkoutA, path: "" }))).map(
+          (session) => session.id,
+        )
+
+        expect(ids).toContain(inA.id)
+        expect(ids).not.toContain(inB.id)
+      }),
+    { git: true },
+  )
+
   itWorkspaces.instance(
     "filters by directory when experimental workspaces are enabled",
     () =>

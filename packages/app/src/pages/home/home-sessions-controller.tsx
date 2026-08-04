@@ -16,14 +16,17 @@ import type { LocalProject } from "@/context/layout"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { sessionHasOpenTab, useTabs } from "@/context/tabs"
-import { displayName, errorMessage, projectForSession } from "@/pages/layout/helpers"
+import { errorMessage, projectForSession } from "@/pages/layout/helpers"
 import { useSessionTabAvatarState } from "@/pages/layout/project-avatar-state"
 import { pathKey } from "@/utils/path-key"
 import { showToast } from "@/utils/toast"
 import { Binary } from "@opencode-ai/core/util/binary"
 import { archiveHomeSession } from "../home-session-archive"
 import type { HomeController } from "./home-controller"
-import { sessionSearchKey } from "./home-sessions-helpers"
+import { buildHomeSessionRecords, sessionSearchKey } from "./home-sessions-helpers"
+import type { HomeSessionRecord } from "./home-sessions-helpers"
+
+export type { HomeSessionRecord } from "./home-sessions-helpers"
 
 /** Returns the directory-qualified identity used by home session search results. */
 export function homeSessionSearchKey(record: HomeSessionRecord) {
@@ -31,12 +34,6 @@ export function homeSessionSearchKey(record: HomeSessionRecord) {
 }
 
 const HOME_SESSION_LIMIT = 64
-export type HomeSessionRecord = {
-  session: Session
-  project: LocalProject
-  projectName: string
-}
-
 export type HomeSessionGroup = {
   id: "today" | "yesterday" | "older"
   title: string
@@ -54,7 +51,10 @@ export function createHomeSessionsController(home: HomeController) {
   const projectDirectories = createMemo(() => {
     const project = home.project.selected()
     if (!project) return home.project.list().flatMap(directories)
-    return directories(project)
+    const directory = home.selection.value().directory
+    if (!directory) return [project.worktree]
+    const managed = project.managedDirectories?.find((item) => pathKey(item.directory) === pathKey(directory))
+    return [managed?.directory ?? project.worktree]
   })
   const projectByID = createMemo(
     () => new Map(home.project.list().flatMap((project) => (project.id ? [[project.id, project] as const] : []))),
@@ -194,7 +194,7 @@ export function createHomeSessionsController(home: HomeController) {
             .find(
               (item) =>
                 pathKey(item.worktree) === directoryKey ||
-                item.sandboxes?.some((sandbox) => pathKey(sandbox) === directoryKey),
+                item.managedDirectories?.some((managed) => pathKey(managed.directory) === directoryKey),
             ) ?? projectForSession(session, home.project.list(), projectByID())
         const conn = home.server.focused()
         if (!conn) return
@@ -250,31 +250,7 @@ export function createHomeSessionsController(home: HomeController) {
 }
 
 function directories(project: LocalProject) {
-  return [project.worktree, ...(project.sandboxes ?? [])]
-}
-
-function buildHomeSessionRecords(input: {
-  sessions: () => Session[]
-  projectDirectories: () => string[]
-  projects: () => LocalProject[]
-  projectByID: () => Map<string, LocalProject>
-}) {
-  const directories = new Set(input.projectDirectories().map(pathKey))
-  const sessions = input.sessions().filter((session) => directories.has(pathKey(session.directory)))
-  return [...new Map(sessions.map((session) => [session.id, session] as const)).values()]
-    .sort((a, b) => (b.time.updated ?? b.time.created) - (a.time.updated ?? a.time.created))
-    .flatMap((session) => {
-      const directory = pathKey(session.directory)
-      const project =
-        input
-          .projects()
-          .find(
-            (item) =>
-              pathKey(item.worktree) === directory || item.sandboxes?.some((sandbox) => pathKey(sandbox) === directory),
-          ) ?? projectForSession(session, input.projects(), input.projectByID())
-      if (!project) return []
-      return { session, project, projectName: displayName(project) }
-    })
+  return [project.worktree, ...(project.managedDirectories?.map((item) => item.directory) ?? [])]
 }
 
 function groupSessions(records: HomeSessionRecord[], language: ReturnType<typeof useLanguage>): HomeSessionGroup[] {

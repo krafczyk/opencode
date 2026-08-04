@@ -29,7 +29,11 @@ export function createHomeController() {
   )
   const homedir = createMemo(() => focusedSync().data.path.home ?? "")
   const selectedProject = createMemo(() =>
-    projects().find((project) => pathKey(project.worktree) === pathKey(selection().directory ?? "")),
+    projects().find(
+      (project) =>
+        pathKey(project.worktree) === pathKey(selection().directory ?? "") ||
+        project.managedDirectories?.some((managed) => pathKey(managed.directory) === pathKey(selection().directory ?? "")),
+    ),
   )
   const newSessionProject = createMemo(
     () =>
@@ -84,7 +88,11 @@ export function createHomeController() {
           !global
             .ensureServerCtx(conn)
             .projects.list()
-            .some((project) => pathKey(project.worktree) === pathKey(directory))
+            .some(
+              (project) =>
+                pathKey(project.worktree) === pathKey(directory) ||
+                project.managedDirectories?.some((managed) => pathKey(managed.directory) === pathKey(directory)),
+            )
         )
           return
         setSelection(toggleHomeProjectSelection(selection(), key, directory))

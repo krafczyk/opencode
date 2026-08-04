@@ -101,18 +101,22 @@ export function getProjectAvatarSource(id?: string, icon?: { color?: string; url
   return icon?.url
 }
 
-export function projectForSession<T extends { id?: string; worktree: string; sandboxes?: string[] }>(
+/** Resolves a session to an exact directory entry before falling back to repository compatibility identity. */
+export function projectForSession<
+  T extends { id?: string; worktree: string; managedDirectories?: { directory: string }[] },
+>(
   session: Session,
   projects: T[],
   byID: Map<string, T> = new Map(projects.flatMap((project) => (project.id ? [[project.id, project] as const] : []))),
 ) {
-  const direct = byID.get(session.projectID)
-  if (direct) return direct
   const directory = pathKey(session.directory)
-  return projects.find(
+  const direct = projects.find(
     (project) =>
-      pathKey(project.worktree) === directory || project.sandboxes?.some((sandbox) => pathKey(sandbox) === directory),
+      pathKey(project.worktree) === directory ||
+      project.managedDirectories?.some((managed) => pathKey(managed.directory) === directory),
   )
+  if (direct) return direct
+  return byID.get(session.projectID)
 }
 
 export const errorMessage = (err: unknown, fallback: string) => {
