@@ -6,12 +6,13 @@ import { SessionsCursor } from "@opencode-ai/protocol/groups/session"
 import {
   ConflictError,
   InvalidCursorError,
+  InvalidRequestError,
   MessageNotFoundError,
   ServiceUnavailableError,
   SessionNotFoundError,
   UnknownError,
 } from "@opencode-ai/protocol/errors"
-import { AbsolutePath } from "@opencode-ai/core/schema"
+import { RequestLocation } from "../location"
 
 const DefaultSessionsLimit = 50
 const DefaultSessionHistoryLimit = 50
@@ -67,12 +68,25 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.create",
         Effect.fn(function* (ctx) {
+          const requestLocation = yield* RequestLocation
+          const payloadLocation = ctx.payload.location
+          if (
+            payloadLocation &&
+            requestLocation.explicit &&
+            (payloadLocation.directory !== requestLocation.explicit.directory ||
+              payloadLocation.workspaceID !== requestLocation.explicit.workspaceID)
+          ) {
+            return yield* new InvalidRequestError({
+              message: "Session payload location conflicts with request location",
+              field: "location",
+            })
+          }
           return {
             data: yield* session.create({
               id: ctx.payload.id,
               agent: ctx.payload.agent,
               model: ctx.payload.model,
-              location: ctx.payload.location ?? { directory: AbsolutePath.make(process.cwd()) },
+              location: payloadLocation ?? requestLocation.explicit ?? requestLocation.resolved,
             }),
           }
         }),

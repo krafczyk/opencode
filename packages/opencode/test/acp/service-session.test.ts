@@ -146,13 +146,17 @@ describe("ACP service sessions", () => {
     messages: readonly { info: unknown; parts: readonly unknown[] }[] = [],
     options?: {
       abort?: (input: { sessionID: string }) => Promise<{ data: boolean }>
+      get?: (input: { directory: string; sessionID: string }) => Promise<{ data: { id: string; directory?: string } }>
       prompt?: (input: unknown) => Promise<{ data: { info: ReturnType<typeof assistantInfo> } }>
     },
   ) => {
     const updates: SessionNotification[] = []
     const mcpAdds: string[] = []
+    const mcpRequests: unknown[] = []
     const aborts: string[] = []
     const forks: string[] = []
+    const forkRequests: unknown[] = []
+    const gets: unknown[] = []
     const prompts: unknown[] = []
     const commands: unknown[] = []
     const summarizes: unknown[] = []
@@ -190,7 +194,10 @@ describe("ACP service sessions", () => {
       },
       session: {
         create: () => Promise.resolve({ data: { id: "ses_new" } }),
-        get: () => Promise.resolve({ data: { id: "ses_loaded" } }),
+        get: (input: { directory: string; sessionID: string }) => {
+          gets.push(input)
+          return options?.get?.(input) ?? Promise.resolve({ data: { id: input.sessionID, directory: input.directory } })
+        },
         list: (input: { directory?: string }) =>
           Promise.resolve({
             data: input.directory ? sessions.filter((session) => session.directory === input.directory) : sessions,
@@ -236,11 +243,13 @@ describe("ACP service sessions", () => {
           }),
         fork: (input: { sessionID: string }) => {
           forks.push(input.sessionID)
+          forkRequests.push(input)
           return Promise.resolve({ data: { id: `fork_${input.sessionID}` } })
         },
       },
       mcp: {
         add: (input: { name?: string }) => {
+          mcpRequests.push(input)
           if (input.name) mcpAdds.push(input.name)
           return Promise.resolve({ data: {} })
         },
@@ -267,8 +276,11 @@ describe("ACP service sessions", () => {
       service: ACPService.make({ sdk, connection, usage }),
       updates,
       mcpAdds,
+      mcpRequests,
       aborts,
       forks,
+      forkRequests,
+      gets,
       prompts,
       commands,
       summarizes,
@@ -319,6 +331,138 @@ describe("ACP service sessions", () => {
 
     expect(result.configOptions?.find((option) => option.id === "effort")?.currentValue).toBe("high")
     expect(result.configOptions?.find((option) => option.id === "mode")?.currentValue).toBe("plan")
+  })
+
+  it("loads a session from its persisted directory before loading caller-directory state", async () => {
+    const calls: string[] = []
+    const sdk = {
+      config: {
+        providers: (input: { directory: string }) => {
+          calls.push(`providers:${input.directory}`)
+          return Promise.resolve({ data: { providers: [provider], default: { test: modelID } } })
+        },
+        get: (input: { directory: string }) => {
+          calls.push(`config:${input.directory}`)
+          return Promise.resolve({ data: {} })
+        },
+      },
+      app: {
+        agents: (input: { directory: string }) => {
+          calls.push(`agents:${input.directory}`)
+          return Promise.resolve({ data: [{ name: "build", mode: "primary", permission: [], options: {} }] })
+        },
+        skills: (input: { directory: string }) => {
+          calls.push(`skills:${input.directory}`)
+          return Promise.resolve({ data: [] })
+        },
+      },
+      command: {
+        list: (input: { directory: string }) => {
+          calls.push(`commands:${input.directory}`)
+          return Promise.resolve({ data: [] })
+        },
+      },
+      session: {
+        get: (input: { directory: string }) => {
+          calls.push(`get:${input.directory}`)
+          return Promise.resolve({ data: { id: "ses_loaded", directory: "/persisted" } })
+        },
+        messages: (input: { directory: string }) => {
+          calls.push(`messages:${input.directory}`)
+          return Promise.resolve({ data: [] })
+        },
+      },
+      mcp: {
+        add: (input: { directory: string }) => {
+          calls.push(`mcp:${input.directory}`)
+          return Promise.resolve({ data: {} })
+        },
+      },
+    } as unknown as OpencodeClient
+    const service = ACPService.make({ sdk })
+
+    await Effect.runPromise(
+      service.loadSession({
+        cwd: "/caller",
+        sessionId: "ses_loaded",
+        mcpServers: [{ name: "tools", command: "node", args: ["server.js"], env: [] }],
+      }),
+    )
+
+    expect(calls).toEqual([
+      "get:/caller",
+      "providers:/persisted",
+      "agents:/persisted",
+      "commands:/persisted",
+      "skills:/persisted",
+      "config:/persisted",
+      "messages:/persisted",
+      "mcp:/persisted",
+    ])
+  })
+
+  it("resumes and forks sessions from their persisted directories despite a conflicting caller cwd", async () => {
+    const { service, forkRequests, gets, prompts } = makeService([], {
+      get: (input) => Promise.resolve({ data: { id: input.sessionID, directory: "/persisted" } }),
+    })
+
+    await Effect.runPromise(service.resumeSession({ cwd: "/caller", sessionId: "ses_resume", mcpServers: [] }))
+    await Effect.runPromise(service.prompt({ sessionId: "ses_resume", prompt: [{ type: "text", text: "hello" }] }))
+    await Effect.runPromise(service.forkSession({ cwd: "/caller", sessionId: "ses_parent", mcpServers: [] }))
+
+    expect(gets).toEqual([
+      { directory: "/caller", sessionID: "ses_resume" },
+      { directory: "/persisted", sessionID: "ses_resume" },
+      { directory: "/caller", sessionID: "ses_parent" },
+    ])
+    expect(prompts).toContainEqual(
+      expect.objectContaining({ sessionID: "ses_resume", directory: "/persisted" }),
+    )
+    expect(forkRequests).toEqual([{ directory: "/persisted", sessionID: "ses_parent" }])
+  })
+
+  it("rebinds an ACP-loaded session after an external move before the next prompt", async () => {
+    let directory = "/a"
+    const { service, mcpRequests, prompts } = makeService([], {
+      get: (input) => Promise.resolve({ data: { id: input.sessionID, directory } }),
+    })
+
+    await Effect.runPromise(
+      service.loadSession({
+        cwd: "/caller",
+        sessionId: "ses_moved",
+        mcpServers: [{ name: "tools", command: "node", args: ["server.js"], env: [] }],
+      }),
+    )
+    directory = "/b"
+    await Effect.runPromise(service.prompt({ sessionId: "ses_moved", prompt: [{ type: "text", text: "continue" }] }))
+
+    expect(prompts).toContainEqual(expect.objectContaining({ sessionID: "ses_moved", directory: "/b" }))
+    expect(mcpRequests).toContainEqual(expect.objectContaining({ directory: "/a" }))
+    expect(mcpRequests).toContainEqual(expect.objectContaining({ directory: "/b" }))
+  })
+
+  it("rejects unknown sessions before loading caller-directory state", async () => {
+    const calls: string[] = []
+    const service = ACPService.make({
+      sdk: {
+        session: {
+          get: () => Promise.reject(new Error("missing")),
+        },
+        config: {
+          providers: () => {
+            calls.push("providers")
+            return Promise.resolve({ data: { providers: [] } })
+          },
+        },
+      } as unknown as OpencodeClient,
+    })
+
+    await Effect.runPromise(
+      service.loadSession({ cwd: "/hostile", sessionId: "ses_missing", mcpServers: [] }).pipe(Effect.flip),
+    )
+
+    expect(calls).toEqual([])
   })
 
   it("replays loaded session transcript chunks", async () => {
@@ -1190,6 +1334,7 @@ describe("ACP service sessions", () => {
         session: {
           create: () => Promise.resolve({ data: { id: session.sessionId } }),
           list: () => Promise.resolve({ data: [] }),
+          get: () => Promise.resolve({ data: { id: session.sessionId, directory: "/workspace" } }),
           prompt: () => Promise.reject({ name: "ProviderAuthError", data: { providerID: "test" } }),
         },
         mcp: {

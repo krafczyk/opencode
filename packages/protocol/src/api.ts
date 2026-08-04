@@ -27,18 +27,21 @@ const makeApiFromGroup = <
   const Group extends HttpApiGroup.Any,
   LocationId extends HttpApiMiddleware.AnyId,
   LocationService,
+  RequestLocationId extends HttpApiMiddleware.AnyId,
+  RequestLocationService,
   SessionLocationId extends HttpApiMiddleware.AnyId,
   SessionLocationService,
 >(
   eventGroup: Group,
   locationMiddleware: Context.Key<LocationId, LocationService>,
+  requestLocationMiddleware: Context.Key<RequestLocationId, RequestLocationService>,
   sessionLocationMiddleware: Context.Key<SessionLocationId, SessionLocationService>,
 ) =>
   HttpApi.make("server")
     .add(HealthGroup)
     .add(LocationGroup.middleware(locationMiddleware))
     .add(AgentGroup.middleware(locationMiddleware))
-    .add(makeSessionGroup(sessionLocationMiddleware))
+    .add(makeSessionGroup(sessionLocationMiddleware, requestLocationMiddleware))
     .add(MessageGroup.middleware(sessionLocationMiddleware))
     .add(ModelGroup.middleware(locationMiddleware))
     .add(ProviderGroup.middleware(locationMiddleware))
@@ -63,24 +66,43 @@ const makeApiFromGroup = <
     .middleware(Authorization)
     .middleware(SchemaErrorMiddleware)
 
+/** Builds the current server API from event definitions and location middleware contracts. */
 export const makeApi = <
   LocationId extends HttpApiMiddleware.AnyId,
   LocationService,
+  RequestLocationId extends HttpApiMiddleware.AnyId,
+  RequestLocationService,
   SessionLocationId extends HttpApiMiddleware.AnyId,
   SessionLocationService,
 >(options: {
   readonly definitions: ReadonlyArray<Definition>
   readonly locationMiddleware: Context.Key<LocationId, LocationService>
+  readonly requestLocationMiddleware: Context.Key<RequestLocationId, RequestLocationService>
   readonly sessionLocationMiddleware: Context.Key<SessionLocationId, SessionLocationService>
 }) =>
-  makeApiFromGroup(makeEventGroup(options.definitions), options.locationMiddleware, options.sessionLocationMiddleware)
+  makeApiFromGroup(
+    makeEventGroup(options.definitions),
+    options.locationMiddleware,
+    options.requestLocationMiddleware,
+    options.sessionLocationMiddleware,
+  )
 
+/** Builds the default server API with the canonical event group and supplied location middleware contracts. */
 export const makeDefaultApi = <
   LocationId extends HttpApiMiddleware.AnyId,
   LocationService,
+  RequestLocationId extends HttpApiMiddleware.AnyId,
+  RequestLocationService,
   SessionLocationId extends HttpApiMiddleware.AnyId,
   SessionLocationService,
 >(options: {
   readonly locationMiddleware: Context.Key<LocationId, LocationService>
+  readonly requestLocationMiddleware: Context.Key<RequestLocationId, RequestLocationService>
   readonly sessionLocationMiddleware: Context.Key<SessionLocationId, SessionLocationService>
-}) => makeApiFromGroup(EventGroup, options.locationMiddleware, options.sessionLocationMiddleware)
+}) =>
+  makeApiFromGroup(
+    EventGroup,
+    options.locationMiddleware,
+    options.requestLocationMiddleware,
+    options.sessionLocationMiddleware,
+  )

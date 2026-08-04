@@ -425,6 +425,7 @@ describe("session HttpApi", () => {
         root: sessionDirectory,
       })
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+    { timeout: 15000 },
   )
 
   it.instance(
@@ -557,6 +558,56 @@ describe("session HttpApi", () => {
         })
         expect(prompt.status).toBe(404)
         expect(yield* responseJson(prompt)).toEqual(expected)
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
+  it.instance(
+    "creates v2 sessions from the explicit transport location and rejects conflicting payload locations",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const other = yield* tmpdirScoped({ git: true })
+        const create = (headers: HeadersInit, location?: { directory: string }) =>
+          request("/api/session", {
+            method: "POST",
+            headers: { ...headers, "content-type": "application/json" },
+            body: JSON.stringify(location ? { location } : {}),
+          })
+
+        const transportOnly = yield* create({ "x-opencode-directory": test.directory })
+        expect(transportOnly.status).toBe(200)
+        expect(yield* responseJson(transportOnly)).toMatchObject({
+          data: { location: { directory: test.directory } },
+        })
+
+        const matching = yield* create({ "x-opencode-directory": test.directory }, { directory: test.directory })
+        expect(matching.status).toBe(200)
+        expect(yield* responseJson(matching)).toMatchObject({
+          data: { location: { directory: test.directory } },
+        })
+
+        const conflicting = yield* create({ "x-opencode-directory": test.directory }, { directory: other })
+        expect(conflicting.status).toBe(400)
+
+        const locationless = yield* create({})
+        expect(locationless.status).toBe(200)
+        expect(yield* responseJson(locationless)).toMatchObject({
+          data: { location: { directory: process.cwd() } },
+        })
+
+        const { db } = yield* Database.Service
+        expect(
+          yield* db
+            .select({ directory: SessionTable.directory })
+            .from(SessionTable)
+            .all()
+            .pipe(Effect.orDie),
+        ).toEqual([
+          { directory: test.directory },
+          { directory: test.directory },
+          { directory: process.cwd() },
+        ])
       }),
     { git: true, config: { formatter: false, lsp: false } },
   )

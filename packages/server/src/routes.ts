@@ -20,7 +20,7 @@ import { handlers } from "./handlers"
 import { authorizationLayer } from "./middleware/authorization"
 import { schemaErrorLayer } from "./middleware/schema-error"
 import { PtyEnvironment } from "./pty-environment"
-import { layer as locationLayer } from "./location"
+import { layer as locationLayer, requestLocationLayer } from "./location"
 import { sessionLocationLayer } from "./middleware/session-location"
 
 const applicationServices = LayerNode.group([
@@ -54,6 +54,7 @@ function makeRoutes<AuthError, AuthServices>(auth: Layer.Layer<ServerAuth.Config
   return HttpApiBuilder.layer(Api, { openapiPath: "/openapi.json" }).pipe(
     Layer.provide(handlers),
     Layer.provide(sessionLocationLayer),
+    Layer.provide(requestLocationLayer),
     Layer.provide(locationLayer),
     Layer.provide(authorizationLayer),
     Layer.provide(schemaErrorLayer),

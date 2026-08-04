@@ -158,6 +158,14 @@ export function make(input: {
     return loaded
   })
 
+  const persistedDirectory = Effect.fn("ACP.persistedDirectory")(function* (sessionId: string, cwd: string) {
+    const persisted = yield* request(
+      () => input.sdk.session.get({ directory: cwd, sessionID: sessionId }, { throwOnError: true }),
+      "session",
+    )
+    return persisted.directory ?? cwd
+  })
+
   const newSession = Effect.fn("ACP.newSession")(function* (params: NewSessionRequest) {
     const started = performance.now()
     const snapshot = yield* directorySnapshot(params.cwd)
@@ -207,20 +215,17 @@ export function make(input: {
   })
 
   const loadSession = Effect.fn("ACP.loadSession")(function* (params: LoadSessionRequest) {
-    const snapshot = yield* directorySnapshot(params.cwd)
-    yield* request(
-      () => input.sdk.session.get({ directory: params.cwd, sessionID: params.sessionId }, { throwOnError: true }),
-      "session",
-    )
+    const cwd = yield* persistedDirectory(params.sessionId, params.cwd)
+    const snapshot = yield* directorySnapshot(cwd)
     const messages = yield* request(
-      () => input.sdk.session.messages({ directory: params.cwd, sessionID: params.sessionId }, { throwOnError: true }),
+      () => input.sdk.session.messages({ directory: cwd, sessionID: params.sessionId }, { throwOnError: true }),
       "session",
     )
     const restored = restoreFromMessages(messages.map((item) => item.info))
     const model = restored.model ?? selectDefaultModel(snapshot)
     const state = yield* session.load({
       id: params.sessionId,
-      cwd: params.cwd,
+      cwd,
       mcpServers: params.mcpServers,
       model,
       variant: restored.variant ?? selectVariant(snapshot, model),
@@ -228,7 +233,7 @@ export function make(input: {
     })
     sessionSnapshots.set(state.id, snapshot)
 
-    yield* registerMcpServers(input.sdk, registeredMcp, params.cwd, state.id, params.mcpServers)
+    yield* registerMcpServers(input.sdk, registeredMcp, cwd, state.id, params.mcpServers)
     yield* sendAvailableCommands(input.connection, state.id, snapshot)
     yield* replayMessages(events, messages)
 
@@ -288,15 +293,12 @@ export function make(input: {
   })
 
   const resumeSession = Effect.fn("ACP.resumeSession")(function* (params: ResumeSessionRequest) {
-    const snapshot = yield* directorySnapshot(params.cwd)
-    yield* request(
-      () => input.sdk.session.get({ directory: params.cwd, sessionID: params.sessionId }, { throwOnError: true }),
-      "session",
-    )
+    const cwd = yield* persistedDirectory(params.sessionId, params.cwd)
+    const snapshot = yield* directorySnapshot(cwd)
     const messages = yield* request(
       () =>
         input.sdk.session.messages(
-          { directory: params.cwd, sessionID: params.sessionId, limit: 20 },
+          { directory: cwd, sessionID: params.sessionId, limit: 20 },
           { throwOnError: true },
         ),
       "session",
@@ -305,7 +307,7 @@ export function make(input: {
     const model = restored.model ?? selectDefaultModel(snapshot)
     const state = yield* session.load({
       id: params.sessionId,
-      cwd: params.cwd,
+      cwd,
       mcpServers: params.mcpServers ?? [],
       model,
       variant: restored.variant ?? selectVariant(snapshot, model),
@@ -313,7 +315,7 @@ export function make(input: {
     })
     sessionSnapshots.set(state.id, snapshot)
 
-    yield* registerMcpServers(input.sdk, registeredMcp, params.cwd, state.id, params.mcpServers ?? [])
+    yield* registerMcpServers(input.sdk, registeredMcp, cwd, state.id, params.mcpServers ?? [])
     yield* sendAvailableCommands(input.connection, state.id, snapshot)
 
     return {
@@ -352,28 +354,30 @@ export function make(input: {
   })
 
   const forkSession = Effect.fn("ACP.forkSession")(function* (params: ForkSessionRequest) {
-    const snapshot = yield* directorySnapshot(params.cwd)
+    const cwd = yield* persistedDirectory(params.sessionId, params.cwd)
     const forked = yield* request(
       () =>
         input.sdk.session.fork(
           {
-            directory: params.cwd,
+            directory: cwd,
             sessionID: params.sessionId,
           },
           { throwOnError: true },
         ),
       "session",
     )
+    const forkedCwd = forked.directory ?? cwd
+    const snapshot = yield* directorySnapshot(forkedCwd)
     const messages = yield* request(
       () =>
-        input.sdk.session.messages({ directory: params.cwd, sessionID: forked.id, limit: 20 }, { throwOnError: true }),
+        input.sdk.session.messages({ directory: forkedCwd, sessionID: forked.id, limit: 20 }, { throwOnError: true }),
       "session",
     )
     const restored = restoreFromMessages(messages.map((item) => item.info))
     const model = restored.model ?? selectDefaultModel(snapshot)
     const state = yield* session.load({
       id: forked.id,
-      cwd: params.cwd,
+      cwd: forkedCwd,
       mcpServers: params.mcpServers ?? [],
       model,
       variant: restored.variant ?? selectVariant(snapshot, model),
@@ -381,7 +385,7 @@ export function make(input: {
     })
     sessionSnapshots.set(state.id, snapshot)
 
-    yield* registerMcpServers(input.sdk, registeredMcp, params.cwd, state.id, params.mcpServers ?? [])
+    yield* registerMcpServers(input.sdk, registeredMcp, forkedCwd, state.id, params.mcpServers ?? [])
     yield* sendAvailableCommands(input.connection, state.id, snapshot)
     yield* replayMessages(events, messages)
 
@@ -490,7 +494,18 @@ export function make(input: {
     setSessionMode,
     setSessionModel,
     prompt: Effect.fn("ACP.prompt")(function* (params: PromptRequest) {
-      const current = yield* session.get(params.sessionId)
+      const loaded = yield* session.get(params.sessionId)
+      const cwd = yield* persistedDirectory(loaded.id, loaded.cwd)
+      const current =
+        cwd === loaded.cwd
+          ? loaded
+          : yield* Effect.gen(function* () {
+              sessionSnapshots.delete(loaded.id)
+              registeredMcp.delete(loaded.id)
+              const rebound = yield* session.rebind(loaded.id, cwd)
+              yield* registerMcpServers(input.sdk, registeredMcp, cwd, rebound.id, rebound.mcpServers)
+              return rebound
+            })
       const snapshot = yield* directorySnapshot(current.cwd)
       const selected = current.model ?? selectDefaultModel(snapshot)
       if (!current.model) {

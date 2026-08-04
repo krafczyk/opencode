@@ -103,7 +103,16 @@ export const SessionsQuery = Schema.Struct({
   cursor: SessionsQueryCursor.pipe(Schema.optional),
 }).annotate({ identifier: "SessionsQuery" })
 
-export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLocationMiddleware: Context.Key<I, S>) =>
+/** Builds the session HTTP contract with persisted-session and request-location middleware. */
+export const makeSessionGroup = <
+  I extends HttpApiMiddleware.AnyId,
+  S,
+  RequestLocationId extends HttpApiMiddleware.AnyId,
+  RequestLocationService,
+>(
+  sessionLocationMiddleware: Context.Key<I, S>,
+  requestLocationMiddleware: Context.Key<RequestLocationId, RequestLocationService>,
+) =>
   HttpApiGroup.make("server.session")
     .add(
       HttpApiEndpoint.get("session.list", "/api/session", {
@@ -134,13 +143,14 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S>(sessionLo
           location: Location.Ref.pipe(Schema.optional),
         }),
         success: Schema.Struct({ data: Session.Info }),
+        error: InvalidRequestError,
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "v2.session.create",
           summary: "Create session",
           description: "Create a session at the requested location.",
         }),
-      ),
+      ).middleware(requestLocationMiddleware),
     )
     .add(
       HttpApiEndpoint.get("session.active", "/api/session/active", {

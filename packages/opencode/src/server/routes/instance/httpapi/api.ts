@@ -26,7 +26,7 @@ import { SyncApi } from "./groups/sync"
 import { TuiApi } from "./groups/tui"
 import { WorkspaceApi } from "./groups/workspace"
 import { makeApi } from "@opencode-ai/protocol/api"
-import { LocationMiddleware } from "@opencode-ai/server/location"
+import { LocationMiddleware, RequestLocationMiddleware } from "@opencode-ai/server/location"
 import { SessionLocationMiddleware } from "@opencode-ai/server/middleware/session-location"
 import { GlobalApi } from "./groups/global"
 import { Authorization } from "./middleware/authorization"
@@ -48,6 +48,7 @@ const EventSchema = Schema.Union([
 export const ServerApi = makeApi({
   definitions: EventManifest.Latest.values().toArray(),
   locationMiddleware: LocationMiddleware,
+  requestLocationMiddleware: RequestLocationMiddleware,
   sessionLocationMiddleware: SessionLocationMiddleware,
 })
 

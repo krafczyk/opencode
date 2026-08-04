@@ -6,6 +6,10 @@ class LocationMiddleware extends HttpApiMiddleware.Service<LocationMiddleware>()
   "@opencode-ai/client/LocationMiddleware",
 ) {}
 
+class RequestLocationMiddleware extends HttpApiMiddleware.Service<RequestLocationMiddleware>()(
+  "@opencode-ai/client/RequestLocationMiddleware",
+) {}
+
 class SessionLocationMiddleware extends HttpApiMiddleware.Service<SessionLocationMiddleware>()(
   "@opencode-ai/client/SessionLocationMiddleware",
   { error: [InvalidRequestError, SessionNotFoundError] },
@@ -13,6 +17,7 @@ class SessionLocationMiddleware extends HttpApiMiddleware.Service<SessionLocatio
 
 export const ClientApi = makeDefaultApi({
   locationMiddleware: LocationMiddleware,
+  requestLocationMiddleware: RequestLocationMiddleware,
   sessionLocationMiddleware: SessionLocationMiddleware,
 })
 

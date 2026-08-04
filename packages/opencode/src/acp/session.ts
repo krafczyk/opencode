@@ -66,6 +66,8 @@ export type Interface = {
   readonly get: (sessionId: string) => Effect.Effect<Info, ACPError.SessionNotFoundError>
   readonly tryGet: (sessionId: string) => Effect.Effect<Info | undefined>
   readonly remove: (sessionId: string) => Effect.Effect<Info | undefined>
+  /** Replace session-scoped location state after another client moves the backing session. */
+  readonly rebind: (sessionId: string, cwd: string) => Effect.Effect<Info, ACPError.SessionNotFoundError>
   readonly setModel: (
     sessionId: string,
     model: SelectedModel | undefined,
@@ -138,6 +140,17 @@ const layer = Layer.effect(
       })
     })
 
+    const rebind: Interface["rebind"] = Effect.fn("ACP.Session.rebind")((sessionId, cwd) =>
+      update(sessionId, (session) => ({
+        ...session,
+        cwd,
+        model: undefined,
+        variant: undefined,
+        modeId: undefined,
+        knownParts: new Map(),
+      })),
+    )
+
     const setModel: Interface["setModel"] = Effect.fn("ACP.Session.setModel")((sessionId, model) =>
       update(sessionId, (session) => ({ ...session, model })),
     )
@@ -178,6 +191,7 @@ const layer = Layer.effect(
       get,
       tryGet,
       remove,
+      rebind,
       setModel,
       getModel: Effect.fn("ACP.Session.getModel")(function* (sessionId) {
         return (yield* get(sessionId)).model
