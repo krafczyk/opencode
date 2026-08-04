@@ -23,6 +23,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Project } from "@opencode-ai/schema/project"
+import { Event as ProjectDirectoriesEvent } from "@opencode-ai/schema/project-directories"
 
 export const Info = Project.Info
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
@@ -89,6 +90,8 @@ export interface Interface {
    */
   readonly init: () => Effect.Effect<void>
   readonly fromDirectory: (directory: string) => Effect.Effect<{ project: Info; sandbox: string }>
+  /** Records an explicit Add Project action for the resolved directory and returns current directory state. */
+  readonly registerDirectory: (input: { directory: string; project: Info }) => Effect.Effect<ProjectV2.Directories>
   readonly discover: (input: Info) => Effect.Effect<void>
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: ProjectV2.ID) => Effect.Effect<Info | undefined>
@@ -386,6 +389,17 @@ const layer = Layer.effect(
       return { project: result, sandbox: data.vcs ? data.directory : worktree }
     })
 
+    const registerDirectory = Effect.fn("Project.registerDirectory")(function* (input: {
+      directory: string
+      project: Info
+    }) {
+      const directory = AbsolutePath.make(FSUtil.resolve(input.directory))
+      yield* projectDirectories.register({ projectID: input.project.id, directory })
+      // Publish every successful registration so a retry repairs a lost invalidation.
+      yield* events.publish(ProjectDirectoriesEvent.Updated, { projectID: input.project.id })
+      return yield* projectV2.directories({ projectID: input.project.id })
+    })
+
     const discover = Effect.fn("Project.discover")(function* (input: Info) {
       if (input.vcs !== "git") return
       if (input.icon?.override) return
@@ -527,6 +541,7 @@ const layer = Layer.effect(
     return Service.of({
       init,
       fromDirectory,
+      registerDirectory,
       discover,
       list,
       get,

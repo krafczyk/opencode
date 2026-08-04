@@ -223,6 +223,18 @@ const scenarios: Scenario[] = [
     }))
     .json(200, array, "status"),
   http.protected
+    .post("/project/directories/current", "project.registerCurrentDirectory")
+    .mutating()
+    .seeded((ctx) => ctx.project())
+    .at((ctx) => ({ path: "/project/directories/current", headers: ctx.headers() }))
+    .json(200, (body, ctx) => {
+      array(body)
+      check(
+        body.some((item) => isRecord(item) && item.directory === ctx.directory && item.kind === "user"),
+        "registration should return the request directory as user-selected",
+      )
+    }),
+  http.protected
     .post("/experimental/project/{projectID}/copy/generate-name", "experimental.projectCopy.generateName")
     .seeded((ctx) => ctx.project())
     .at((ctx) => ({

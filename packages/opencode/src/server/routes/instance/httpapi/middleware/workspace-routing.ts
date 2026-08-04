@@ -31,7 +31,11 @@ type RemoteTarget = Extract<Target, { type: "remote" }>
 type RequestPlan = Data.TaggedEnum<{
   InvalidWorkspace: {}
   MissingWorkspace: { readonly workspaceID: WorkspaceV2.ID }
-  Local: { readonly directory: string; readonly workspaceID?: WorkspaceV2.ID }
+  Local: {
+    readonly directory: string
+    readonly workspaceID?: WorkspaceV2.ID
+    readonly authority: "ambient" | "explicit" | "workspace"
+  }
   Remote: {
     readonly request: HttpServerRequest.HttpServerRequest
     readonly workspace: Workspace.Info
@@ -47,6 +51,7 @@ export class WorkspaceRouteContext extends Context.Service<
   {
     readonly directory: string
     readonly workspaceID?: WorkspaceV2.ID
+    readonly authority: "ambient" | "explicit" | "workspace"
   }
 >()("@opencode/ExperimentalHttpApiWorkspaceRouteContext") {}
 
@@ -153,7 +158,7 @@ function planWorkspaceRequest(
   return Effect.gen(function* () {
     const target = yield* resolveTarget(workspace)
     if (target.type === "remote") return RequestPlan.Remote({ request, workspace, target, url })
-    return RequestPlan.Local({ directory: target.directory, workspaceID: workspace.id })
+    return RequestPlan.Local({ directory: target.directory, workspaceID: workspace.id, authority: "workspace" })
   })
 }
 
@@ -181,6 +186,10 @@ function planRequest(
     return RequestPlan.Local({
       directory: session?.directory || defaultDirectory(request, url),
       workspaceID: envWorkspaceID ?? workspaceID,
+      authority:
+        session?.directory || url.searchParams.get("directory") || request.headers["x-opencode-directory"]
+          ? "explicit"
+          : "ambient",
     })
   })
 }
@@ -204,8 +213,10 @@ function routeWorkspace<E>(
       ),
     MissingWorkspace: ({ workspaceID }) => Effect.succeed(missingWorkspaceResponse(workspaceID)),
     Remote: ({ request, workspace, target, url }) => proxyRemote(client, request, workspace, target, url),
-    Local: ({ directory, workspaceID }) =>
-      effect.pipe(Effect.provideService(WorkspaceRouteContext, WorkspaceRouteContext.of({ directory, workspaceID }))),
+    Local: ({ directory, workspaceID, authority }) =>
+      effect.pipe(
+        Effect.provideService(WorkspaceRouteContext, WorkspaceRouteContext.of({ directory, workspaceID, authority })),
+      ),
   })
 }
 

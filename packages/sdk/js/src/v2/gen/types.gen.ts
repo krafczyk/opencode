@@ -3842,7 +3842,9 @@ export type ConfigV2ExperimentalPolicy = {
 
 export type ProjectDirectories = Array<{
   directory: string
+  kind: "user" | "managed"
   strategy?: string
+  sourceDirectory?: string
 }>
 
 export type PtyTicketConnectToken = {
@@ -8849,6 +8851,36 @@ export type ProjectDirectoriesResponses = {
 }
 
 export type ProjectDirectoriesResponse = ProjectDirectoriesResponses[keyof ProjectDirectoriesResponses]
+
+export type ProjectRegisterCurrentDirectoryData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/project/directories/current"
+}
+
+export type ProjectRegisterCurrentDirectoryErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type ProjectRegisterCurrentDirectoryError =
+  ProjectRegisterCurrentDirectoryErrors[keyof ProjectRegisterCurrentDirectoryErrors]
+
+export type ProjectRegisterCurrentDirectoryResponses = {
+  /**
+   * Authoritative project directory state
+   */
+  200: ProjectDirectories
+}
+
+export type ProjectRegisterCurrentDirectoryResponse =
+  ProjectRegisterCurrentDirectoryResponses[keyof ProjectRegisterCurrentDirectoryResponses]
 
 export type ExperimentalProjectCopyGenerateNameData = {
   body?: {

@@ -34,8 +34,10 @@ export const { use: useProject, provider: ProjectProvider } = createSimpleContex
         status: {} as Record<string, WorkspaceStatus>,
       },
     })
+    let syncVersion = 0
 
     async function sync() {
+      const version = ++syncVersion
       const workspace = store.workspace.current
       const [instancePath, project] = await Promise.all([
         sdk.client.path.get({ workspace }),
@@ -44,6 +46,7 @@ export const { use: useProject, provider: ProjectProvider } = createSimpleContex
       const directories = project.data?.id
         ? await sdk.client.project.directories({ projectID: project.data.id, workspace })
         : undefined
+      if (version !== syncVersion) return
       batch(() => {
         setStore("instance", "path", reconcile(instancePath.data || defaultPath))
         setStore("project", "id", project.data?.id)
@@ -71,6 +74,7 @@ export const { use: useProject, provider: ProjectProvider } = createSimpleContex
       if (event.payload.type === "workspace.status") {
         setStore("workspace", "status", event.payload.properties.workspaceID, event.payload.properties.status)
       }
+      if (event.payload.type === "project.directories.updated" || event.payload.type === "server.connected") void sync()
     })
 
     return {
@@ -108,6 +112,11 @@ export const { use: useProject, provider: ProjectProvider } = createSimpleContex
           return store.workspace.status
         },
         sync: syncWorkspace,
+      },
+      async registerCurrentDirectory() {
+        const result = await sdk.client.project.registerCurrentDirectory({ workspace: store.workspace.current })
+        await sync()
+        return result
       },
       sync,
     }

@@ -4,6 +4,7 @@ import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
 import { ProjectNotFoundError } from "../errors"
 import { Authorization } from "../middleware/authorization"
+import { CurrentDirectoryRegistrationMiddleware } from "../middleware/current-directory-registration"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { described } from "./metadata"
@@ -91,3 +92,30 @@ export const ProjectApi = HttpApi.make("project")
       description: "Experimental HttpApi surface for selected instance routes.",
     }),
   )
+
+export const ProjectRegistrationApi = HttpApi.make("projectRegistration").add(
+  HttpApiGroup.make("projectRegistration")
+    .add(
+      HttpApiEndpoint.post("registerCurrentDirectory", `${root}/directories/current`, {
+        query: WorkspaceRoutingQuery,
+        success: described(ProjectV2.Directories, "Authoritative project directory state"),
+        error: [HttpApiError.BadRequest],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "project.registerCurrentDirectory",
+          summary: "Register current project directory",
+          description: "Record explicit Add Project intent for the request-scoped directory.",
+        }),
+      ),
+    )
+    .annotateMerge(
+      OpenApi.annotations({
+        title: "projectRegistration",
+        description: "Explicit project directory registration route.",
+      }),
+    )
+    .middleware(InstanceContextMiddleware)
+    .middleware(CurrentDirectoryRegistrationMiddleware)
+    .middleware(WorkspaceRoutingMiddleware)
+    .middleware(Authorization),
+)

@@ -105,7 +105,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     return (
       directoryData()
         ?.filter((root) => contains(root.directory, directory))
-        .toSorted((a, b) => b.directory.length - a.directory.length)[0] ?? { directory }
+        .toSorted((a, b) => b.directory.length - a.directory.length)[0] ?? { directory, kind: "user" }
     )
   })
 
@@ -115,7 +115,7 @@ export function DialogMoveSession(props: DialogMoveSessionProps) {
     const current = currentRoot()?.directory
     if (directories.loading && !data && !current) return [{ title: "Loading project directories...", value: undefined }]
     const roots = [...(data ?? [])]
-    if (current && !roots.some((item) => item.directory === current)) roots.unshift({ directory: current })
+    if (current && !roots.some((item) => item.directory === current)) roots.unshift({ directory: current, kind: "user" })
     roots.sort((a, b) => {
       if (a.directory === current) return -1
       if (b.directory === current) return 1

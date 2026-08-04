@@ -299,6 +299,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   let bootingRoot = false
   let eventFrame: number | undefined
   let eventTimer: ReturnType<typeof setTimeout> | undefined
+  let projectRefreshVersion = 0
 
   onCleanup(() => {
     if (eventFrame !== undefined) cancelAnimationFrame(eventFrame)
@@ -307,6 +308,13 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
     setGlobalStore("project", next)
+  }
+
+  const refreshProjects = async () => {
+    const version = ++projectRefreshVersion
+    const projects = await queryClient.fetchQuery(loadProjectsQuery(serverSDK.scope, serverSDK.api.project))
+    if (version !== projectRefreshVersion) return
+    setProjects(projects)
   }
 
   const setBootStore = ((...input: unknown[]) => {
@@ -560,8 +568,10 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         eventType === "catalog.updated" ||
         eventType === "agent.updated" ||
         eventType === "project.directories.updated"
-      )
-        bootstrap.refetch()
+      ) {
+        if (eventType === "project.directories.updated") void refreshProjects()
+        if (eventType !== "project.directories.updated") bootstrap.refetch()
+      }
       if (eventType === "server.connected" || eventType === "global.disposed") {
         if (recent) return
         for (const directory of Object.keys(children.children)) {
@@ -581,6 +591,8 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         .resolve(event.current.data.sessionID, { force: true })
         .then(indexSession)
         .catch(() => {})
+
+    if (eventType === "project.directories.updated") void refreshProjects()
 
     const existing = children.children[key]
     if (!existing) return

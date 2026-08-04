@@ -61,3 +61,14 @@ export const projectHandlers = HttpApiBuilder.group(InstanceHttpApi, "project", 
       .handle("directories", directories)
   }),
 )
+
+export const projectRegistrationHandlers = HttpApiBuilder.group(InstanceHttpApi, "projectRegistration", (handlers) =>
+  Effect.gen(function* () {
+    const svc = yield* Project.Service
+    return handlers.handle("registerCurrentDirectory", () =>
+      InstanceState.context.pipe(
+        Effect.flatMap((ctx) => svc.registerDirectory({ directory: ctx.directory, project: ctx.project })),
+      ),
+    )
+  }),
+)

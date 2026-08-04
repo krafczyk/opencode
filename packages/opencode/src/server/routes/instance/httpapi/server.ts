@@ -91,7 +91,7 @@ import { globalHandlers } from "./handlers/global"
 import { instanceHandlers } from "./handlers/instance"
 import { mcpHandlers } from "./handlers/mcp"
 import { permissionHandlers } from "./handlers/permission"
-import { projectHandlers } from "./handlers/project"
+import { projectHandlers, projectRegistrationHandlers } from "./handlers/project"
 import { projectCopyHandlers } from "./handlers/project-copy"
 import { providerHandlers } from "./handlers/provider"
 import { ptyConnectHandlers, ptyHandlers } from "./handlers/pty"
@@ -107,6 +107,7 @@ import { PtyEnvironment } from "@opencode-ai/server/pty-environment"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
 import { instanceContextLayer } from "./middleware/instance-context"
+import { currentDirectoryRegistrationLayer } from "./middleware/current-directory-registration"
 import { workspaceRoutingLayer } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
@@ -159,6 +160,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     instanceHandlers,
     mcpHandlers,
     projectHandlers,
+    projectRegistrationHandlers,
     projectCopyHandlers,
     ptyHandlers,
     questionHandlers,
@@ -172,7 +174,13 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
 )
 
 const instanceRoutes = instanceApiRoutes.pipe(
-  Layer.provide([httpApiAuthLayer, workspaceRoutingLive, instanceContextLayer, schemaErrorLayer]),
+  Layer.provide([
+    httpApiAuthLayer,
+    workspaceRoutingLive,
+    instanceContextLayer,
+    currentDirectoryRegistrationLayer,
+    schemaErrorLayer,
+  ]),
 )
 const serverRoutes = HttpApiBuilder.layer(Api).pipe(
   Layer.provide(handlers),

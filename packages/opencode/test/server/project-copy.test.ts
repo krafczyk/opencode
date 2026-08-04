@@ -8,13 +8,17 @@ import { Effect, Layer } from "effect"
 import { HttpClientResponse } from "effect/unstable/http"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Database } from "@opencode-ai/core/database/database"
+import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
+import { ProjectV2 } from "@opencode-ai/core/project"
+import { AbsolutePath } from "@opencode-ai/core/schema"
+import { eq } from "drizzle-orm"
 import { Snapshot } from "@/snapshot"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { InstanceStore } from "@/project/instance-store"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
+import { httpApiLayer, request as requestHttp, requestInDirectory } from "./httpapi-layer"
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -40,7 +44,64 @@ function json<T>(response: HttpClientResponse.HttpClientResponse) {
 }
 
 describe("project directories and copies endpoints", () => {
-  type ProjectDirectory = { directory: string; strategy?: string }
+  type ProjectDirectory = { directory: string; kind: "user" | "managed"; strategy?: string; sourceDirectory?: string }
+
+  it.instance(
+    "registers the request directory, demotes managed copies, and remains idempotent",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const current = yield* request(test.directory, "/project/current")
+        const projectID = ProjectV2.ID.make((yield* json<{ id: string }>(current)).id)
+        const { db } = yield* Database.Service
+        yield* db
+          .update(ProjectDirectoryTable)
+          .set({ kind: "managed", strategy: "git_worktree", source_directory: AbsolutePath.make(test.directory) })
+          .where(eq(ProjectDirectoryTable.project_id, projectID))
+          .run()
+          .pipe(Effect.orDie)
+
+        const registered = yield* request(test.directory, "/project/directories/current", { method: "POST" })
+        const repeated = yield* request(test.directory, "/project/directories/current", { method: "POST" })
+
+        expect(registered.status).toBe(200)
+        expect(repeated.status).toBe(200)
+        expect(yield* json<ProjectDirectory[]>(registered)).toEqual([{ directory: test.directory, kind: "user" }])
+        expect(yield* json<ProjectDirectory[]>(repeated)).toEqual([{ directory: test.directory, kind: "user" }])
+
+        const remove = yield* request(test.directory, `/experimental/project/${projectID}/copy`, {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ directory: test.directory, force: true }),
+        })
+        expect(remove.status).toBe(400)
+      }),
+    { git: true },
+  )
+
+  it.live("rejects registration without explicit directory authority before instance loading", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const response = yield* requestHttp("/project/directories/current", { method: "POST" })
+
+      expect(response.status).toBe(400)
+      expect(yield* db.select().from(ProjectTable).all().pipe(Effect.orDie)).toEqual([])
+      expect(yield* db.select().from(ProjectDirectoryTable).all().pipe(Effect.orDie)).toEqual([])
+    }),
+  )
+
+  it.live("rejects nonexistent explicit request directories before instance loading", () =>
+    Effect.gen(function* () {
+      const { db } = yield* Database.Service
+      const response = yield* requestHttp(`/project/directories/current?directory=${encodeURIComponent("/missing")}`, {
+        method: "POST",
+      })
+
+      expect(response.status).toBe(400)
+      expect(yield* db.select().from(ProjectTable).all().pipe(Effect.orDie)).toEqual([])
+      expect(yield* db.select().from(ProjectDirectoryTable).all().pipe(Effect.orDie)).toEqual([])
+    }),
+  )
 
   it.instance(
     "lists directories and manages git worktree copies",
@@ -59,7 +120,7 @@ describe("project directories and copies endpoints", () => {
 
         const initial = yield* request(test.directory, `${base}/directories`)
         expect(initial.status).toBe(200)
-        expect(yield* json<ProjectDirectory[]>(initial)).toEqual([{ directory: test.directory }])
+        expect(yield* json<ProjectDirectory[]>(initial)).toEqual([{ directory: test.directory, kind: "user" }])
 
         const generated = yield* request(test.directory, `/experimental/project/${projectID}/copy/generate-name`, {
           method: "POST",
@@ -81,7 +142,9 @@ describe("project directories and copies endpoints", () => {
         const listed = yield* request(test.directory, `${base}/directories`)
         expect(yield* json<ProjectDirectory[]>(listed)).toContainEqual({
           directory: created.directory,
+          kind: "managed",
           strategy: "git_worktree",
+          sourceDirectory: test.directory,
         })
 
         yield* Effect.promise(() => Bun.write(path.join(created.directory, "dirty.txt"), "dirty"))
@@ -118,8 +181,12 @@ describe("project directories and copies endpoints", () => {
         expect(refresh.status).toBe(204)
         const refreshed = yield* request(test.directory, `${base}/directories`)
         expect(yield* json<ProjectDirectory[]>(refreshed)).toEqual([
-          { directory: externalDirectory, strategy: "git_worktree" },
-          { directory: test.directory },
+          {
+            directory: externalDirectory,
+            kind: "managed",
+            strategy: "git_worktree",
+          },
+          { directory: test.directory, kind: "user" },
         ])
       }),
     { git: true },

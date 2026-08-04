@@ -3927,6 +3927,70 @@
         ]
       }
     },
+    "/project/directories/current": {
+      "post": {
+        "tags": ["projectRegistration"],
+        "operationId": "project.registerCurrentDirectory",
+        "parameters": [
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authoritative project directory state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDirectories"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Record explicit Add Project intent for the request-scoped directory.",
+        "summary": "Register current project directory",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.project.registerCurrentDirectory({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/experimental/project/{projectID}/copy/generate-name": {
       "post": {
         "tags": ["projectCopy"],
@@ -27057,11 +27121,18 @@
             "directory": {
               "type": "string"
             },
+            "kind": {
+              "type": "string",
+              "enum": ["user", "managed"]
+            },
             "strategy": {
+              "type": "string"
+            },
+            "sourceDirectory": {
               "type": "string"
             }
           },
-          "required": ["directory"],
+          "required": ["directory", "kind"],
           "additionalProperties": false
         }
       },
@@ -36812,6 +36883,10 @@
     {
       "name": "project",
       "description": "Experimental HttpApi project routes."
+    },
+    {
+      "name": "projectRegistration",
+      "description": "Explicit project directory registration route."
     },
     {
       "name": "projectCopy",
