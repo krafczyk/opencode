@@ -227,6 +227,10 @@ const ProbeApi = HttpApi.make("workspace-routing-probe").add(
     .add(
       HttpApiEndpoint.get("get", "/probe", { query: WorkspaceRoutingQuery, success: ProbeResult }),
       HttpApiEndpoint.patch("patch", "/probe", { query: WorkspaceRoutingQuery, success: Schema.Boolean }),
+      HttpApiEndpoint.post("registration", "/project/directories/current", {
+        query: WorkspaceRoutingQuery,
+        success: Schema.Unknown,
+      }),
       HttpApiEndpoint.get("session", "/session", { query: WorkspaceRoutingQuery, success: ProbeResult }),
       HttpApiEndpoint.get("workspace", WorkspacePaths.list, {
         query: WorkspaceRoutingQuery,
@@ -245,6 +249,7 @@ const probeHandlers = HttpApiBuilder.group(ProbeApi, "probe", (handlers) =>
   handlers
     .handle("get", () => routeContextResponse)
     .handle("patch", () => Effect.succeed(false))
+    .handle("registration", () => Effect.succeed({}))
     .handle("session", () => routeContextResponse)
     .handle("workspace", () => routeContextResponse),
 )
@@ -296,7 +301,9 @@ describe("HttpApi workspace routing middleware", () => {
       yield* serveProbe
 
       const body = '{"title":"Remote workspace request"}'
-      const response = yield* HttpClientRequest.patch(`/probe?workspace=${workspace.id}&keep=yes`).pipe(
+      const response = yield* HttpClientRequest.patch(
+        `/probe?workspace=${workspace.id}&keep=yes&directory=/secret/path`,
+      ).pipe(
         HttpClientRequest.setHeaders({
           "x-opencode-directory": "/secret/path",
           "x-opencode-workspace": "internal",
@@ -318,12 +325,23 @@ describe("HttpApi workspace routing middleware", () => {
       expect(forwardedURL?.pathname).toBe("/base/probe")
       expect(forwardedURL?.searchParams.get("keep")).toBe("yes")
       expect(forwardedURL?.searchParams.get("workspace")).toBeNull()
+      expect(forwardedURL?.searchParams.get("directory")).toBeNull()
       expect(forwarded?.method).toBe("PATCH")
       expect(forwarded?.body).toBe(body)
       expect(forwarded?.headers["content-type"]).toBe("application/json")
       expect(forwarded?.headers["x-target-auth"]).toBe("secret")
       expect(forwarded?.headers["x-opencode-directory"]).toBeUndefined()
       expect(forwarded?.headers["x-opencode-workspace"]).toBeUndefined()
+
+      const registration = yield* HttpClientRequest.post(
+        `/project/directories/current?workspace=${workspace.id}&directory=/caller/directory`,
+      ).pipe(HttpClient.execute)
+
+      expect(registration.status).toBe(201)
+      const registrationURL = forwarded ? requestURL(forwarded) : undefined
+      expect(registrationURL?.searchParams.get("workspace")).toBeNull()
+      expect(registrationURL?.searchParams.get("directory")).toBeNull()
+      expect(forwarded?.headers["x-opencode-directory"]).toBe(path.join(dir, ".remote-http-target"))
     }),
   )
 

@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { and, eq, isNull, sql } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
 import { ProjectDirectories } from "@opencode-ai/core/project/directories"
@@ -13,6 +13,7 @@ import { Command } from "@/command"
 import { InstanceState } from "@/effect/instance-state"
 import { Effect, Layer, Scope, Context, Stream, Types, Schema } from "effect"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
+import { HttpApiError } from "effect/unstable/httpapi"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AppProcess } from "@opencode-ai/core/process"
 import { ProjectV2 } from "@opencode-ai/core/project"
@@ -94,7 +95,7 @@ export interface Interface {
   readonly registerDirectory: (input: {
     directory: string
     projectID: ProjectV2.ID
-  }) => Effect.Effect<ProjectV2.Directories>
+  }) => Effect.Effect<ProjectV2.Directories, HttpApiError.BadRequest>
   readonly discover: (input: Info) => Effect.Effect<void>
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: ProjectV2.ID) => Effect.Effect<Info | undefined>
@@ -153,43 +154,46 @@ const layer = Layer.effect(
     const migrateProjectId = Effect.fn("Project.migrateProjectId")(function* (
       oldID: ProjectV2.ID | undefined,
       newID: ProjectV2.ID,
+      directory: AbsolutePath,
     ) {
       if (!oldID) return
       if (oldID === ProjectV2.ID.global) return
       if (oldID === newID) return
 
-      yield* db
-        .transaction(
-          (d) =>
-            Effect.gen(function* () {
-              const oldProject = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, oldID)).get()
-              const newProject = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, newID)).get()
-              if (oldProject && !newProject) {
-                yield* d
-                  .insert(ProjectTable)
-                  .values({
-                    ...oldProject,
-                    id: newID,
-                    time_updated: Date.now(),
-                  })
-                  .run()
-              }
+      yield* projectDirectories.withLock(
+        { directory },
+        db
+          .transaction(
+            (d) =>
+              Effect.gen(function* () {
+                const oldProject = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, oldID)).get()
+                const newProject = yield* d.select().from(ProjectTable).where(eq(ProjectTable.id, newID)).get()
+                if (oldProject && !newProject) {
+                  yield* d
+                    .insert(ProjectTable)
+                    .values({
+                      ...oldProject,
+                      id: newID,
+                      worktree: directory,
+                      sandboxes: [],
+                      time_updated: Date.now(),
+                    })
+                    .run()
+                }
 
-              const directories = yield* d
-                .select()
-                .from(ProjectDirectoryTable)
-                .where(eq(ProjectDirectoryTable.project_id, oldID))
-                .all()
-              yield* Effect.forEach(directories, (directory) =>
-                Effect.gen(function* () {
+                const migrated = yield* d
+                  .select()
+                  .from(ProjectDirectoryTable)
+                  .where(
+                    and(eq(ProjectDirectoryTable.project_id, oldID), eq(ProjectDirectoryTable.directory, directory)),
+                  )
+                  .get()
+                if (migrated) {
                   const existing = yield* d
                     .select()
                     .from(ProjectDirectoryTable)
                     .where(
-                      and(
-                        eq(ProjectDirectoryTable.project_id, newID),
-                        eq(ProjectDirectoryTable.directory, directory.directory),
-                      ),
+                      and(eq(ProjectDirectoryTable.project_id, newID), eq(ProjectDirectoryTable.directory, directory)),
                     )
                     .get()
                   if (!existing) {
@@ -199,83 +203,133 @@ const layer = Layer.effect(
                       .where(
                         and(
                           eq(ProjectDirectoryTable.project_id, oldID),
-                          eq(ProjectDirectoryTable.directory, directory.directory),
+                          eq(ProjectDirectoryTable.directory, directory),
                         ),
                       )
                       .run()
-                    return
                   }
-                  if (directory.kind === "user" && existing.kind !== "user")
+                  if (existing) {
+                    if (migrated.kind === "user" && existing.kind !== "user")
+                      yield* d
+                        .update(ProjectDirectoryTable)
+                        .set({ kind: "user", strategy: null, source_directory: null })
+                        .where(
+                          and(
+                            eq(ProjectDirectoryTable.project_id, newID),
+                            eq(ProjectDirectoryTable.directory, directory),
+                          ),
+                        )
+                        .run()
+                    if (migrated.kind === "managed" && existing.kind === "managed") {
+                      const strategy =
+                        migrated.strategy === existing.strategy
+                          ? existing.strategy
+                          : migrated.strategy === null
+                            ? existing.strategy
+                            : existing.strategy === null
+                              ? migrated.strategy
+                              : existing.strategy
+                      const source =
+                        migrated.source_directory === existing.source_directory
+                          ? existing.source_directory
+                          : migrated.source_directory === null
+                            ? existing.source_directory
+                            : existing.source_directory === null
+                              ? migrated.source_directory
+                              : existing.source_directory
+                      yield* d
+                        .update(ProjectDirectoryTable)
+                        .set({ strategy, source_directory: source })
+                        .where(
+                          and(
+                            eq(ProjectDirectoryTable.project_id, newID),
+                            eq(ProjectDirectoryTable.directory, directory),
+                          ),
+                        )
+                        .run()
+                    }
                     yield* d
-                      .update(ProjectDirectoryTable)
-                      .set({ kind: "user", strategy: null, source_directory: null })
+                      .delete(ProjectDirectoryTable)
                       .where(
                         and(
-                          eq(ProjectDirectoryTable.project_id, newID),
-                          eq(ProjectDirectoryTable.directory, directory.directory),
+                          eq(ProjectDirectoryTable.project_id, oldID),
+                          eq(ProjectDirectoryTable.directory, directory),
                         ),
                       )
                       .run()
-                  yield* d
-                    .delete(ProjectDirectoryTable)
-                    .where(
-                      and(
-                        eq(ProjectDirectoryTable.project_id, oldID),
-                        eq(ProjectDirectoryTable.directory, directory.directory),
-                      ),
-                    )
-                    .run()
-                }),
-              )
-
-              yield* d
-                .update(SessionTable)
-                .set({ project_id: newID, time_updated: sql`${SessionTable.time_updated}` })
-                .where(eq(SessionTable.project_id, oldID))
-                .run()
-              yield* d
-                .update(WorkspaceTable)
-                .set({ project_id: newID })
-                .where(eq(WorkspaceTable.project_id, oldID))
-                .run()
-              const permissions = yield* d
-                .select()
-                .from(PermissionTable)
-                .where(eq(PermissionTable.project_id, oldID))
-                .all()
-              yield* Effect.forEach(permissions, (permission) =>
-                Effect.gen(function* () {
-                  const existing = yield* d
-                    .select({ id: PermissionTable.id })
-                    .from(PermissionTable)
-                    .where(
-                      and(
-                        eq(PermissionTable.project_id, newID),
-                        permission.directory === null
-                          ? isNull(PermissionTable.directory)
-                          : eq(PermissionTable.directory, permission.directory),
-                        eq(PermissionTable.action, permission.action),
-                        eq(PermissionTable.resource, permission.resource),
-                      ),
-                    )
-                    .get()
-                  if (existing) {
-                    yield* d.delete(PermissionTable).where(eq(PermissionTable.id, permission.id)).run()
-                    return
                   }
-                  yield* d
-                    .update(PermissionTable)
-                    .set({ project_id: newID, time_updated: sql`${PermissionTable.time_updated}` })
-                    .where(eq(PermissionTable.id, permission.id))
-                    .run()
-                }),
-              )
+                }
 
-              if (oldProject) yield* d.delete(ProjectTable).where(eq(ProjectTable.id, oldID)).run()
-            }),
-          { behavior: "immediate" },
-        )
-        .pipe(Effect.orDie)
+                yield* d
+                  .update(SessionTable)
+                  .set({ project_id: newID, time_updated: sql`${SessionTable.time_updated}` })
+                  .where(and(eq(SessionTable.project_id, oldID), eq(SessionTable.directory, directory)))
+                  .run()
+                yield* d
+                  .update(WorkspaceTable)
+                  .set({ project_id: newID })
+                  .where(and(eq(WorkspaceTable.project_id, oldID), eq(WorkspaceTable.directory, directory)))
+                  .run()
+                const permissions = yield* d
+                  .select()
+                  .from(PermissionTable)
+                  .where(and(eq(PermissionTable.project_id, oldID), eq(PermissionTable.directory, directory)))
+                  .all()
+                yield* Effect.forEach(permissions, (permission) =>
+                  Effect.gen(function* () {
+                    const existing = yield* d
+                      .select({ id: PermissionTable.id })
+                      .from(PermissionTable)
+                      .where(
+                        and(
+                          eq(PermissionTable.project_id, newID),
+                          eq(PermissionTable.directory, permission.directory!),
+                          eq(PermissionTable.action, permission.action),
+                          eq(PermissionTable.resource, permission.resource),
+                        ),
+                      )
+                      .get()
+                    if (existing) {
+                      yield* d.delete(PermissionTable).where(eq(PermissionTable.id, permission.id)).run()
+                      return
+                    }
+                    yield* d
+                      .update(PermissionTable)
+                      .set({ project_id: newID, time_updated: sql`${PermissionTable.time_updated}` })
+                      .where(eq(PermissionTable.id, permission.id))
+                      .run()
+                  }),
+                )
+
+                const stillReferenced = yield* Effect.all([
+                  d
+                    .select({ projectID: ProjectDirectoryTable.project_id })
+                    .from(ProjectDirectoryTable)
+                    .where(eq(ProjectDirectoryTable.project_id, oldID))
+                    .get(),
+                  d
+                    .select({ projectID: SessionTable.project_id })
+                    .from(SessionTable)
+                    .where(eq(SessionTable.project_id, oldID))
+                    .get(),
+                  d
+                    .select({ projectID: WorkspaceTable.project_id })
+                    .from(WorkspaceTable)
+                    .where(eq(WorkspaceTable.project_id, oldID))
+                    .get(),
+                  d
+                    .select({ projectID: PermissionTable.project_id })
+                    .from(PermissionTable)
+                    .where(eq(PermissionTable.project_id, oldID))
+                    .get(),
+                ])
+                if (oldProject && stillReferenced.every((row) => row === undefined))
+                  yield* d.delete(ProjectTable).where(eq(ProjectTable.id, oldID)).run()
+              }),
+            { behavior: "immediate" },
+          )
+          .pipe(Effect.orDie),
+      )
     })
 
     const saveProjectDirectory = Effect.fn("Project.saveProjectDirectory")(function* (input: {
@@ -304,7 +358,7 @@ const layer = Layer.effect(
 
       // Phase 2: upsert
       const projectID = ProjectV2.ID.make(data.id)
-      yield* migrateProjectId(data.previous ? ProjectV2.ID.make(data.previous) : undefined, projectID)
+      yield* migrateProjectId(data.previous ? ProjectV2.ID.make(data.previous) : undefined, projectID, data.directory)
       const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get().pipe(Effect.orDie)
       const existing = row
         ? fromRow(row)
@@ -400,7 +454,12 @@ const layer = Layer.effect(
       projectID: ProjectV2.ID
     }) {
       const directory = AbsolutePath.make(FSUtil.resolve(input.directory))
-      yield* projectDirectories.register({ projectID: input.projectID, directory })
+      yield* projectDirectories.register(
+        { projectID: input.projectID, directory },
+        fs
+          .isDir(directory)
+          .pipe(Effect.flatMap((exists) => (exists ? Effect.void : Effect.fail(new HttpApiError.BadRequest({}))))),
+      )
       // Publish every successful registration so a retry repairs a lost invalidation.
       yield* events.publish(ProjectDirectoriesEvent.Updated, { projectID: input.projectID })
       return yield* projectV2.directories({ projectID: input.projectID })

@@ -20,7 +20,7 @@ export const currentDirectoryRegistrationLayer = Layer.effect(
       Effect.gen(function* () {
         const route = yield* WorkspaceRouteContext
         if (route.authority === "ambient") return yield* new HttpApiError.BadRequest({})
-        if (!(yield* fs.isDir(FSUtil.resolve(route.directory)))) return yield* new HttpApiError.BadRequest({})
+        if (!(yield* fs.isDir(route.directory))) return yield* new HttpApiError.BadRequest({})
         return yield* effect
       }),
     )

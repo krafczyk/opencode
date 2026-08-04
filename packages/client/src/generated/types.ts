@@ -2319,6 +2319,7 @@ export type PermissionsListSavedOutput = {
   readonly data: ReadonlyArray<{
     readonly id: string
     readonly projectID: string
+    readonly directory?: string
     readonly action: string
     readonly resource: string
   }>

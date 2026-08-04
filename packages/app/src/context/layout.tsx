@@ -475,12 +475,15 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       const presentation = presentProjectDirectories(
         entries.map((project) => project.worktree),
         records,
+        server.projects.pendingRegistration(),
       )
       return presentation.roots.map((directory) => {
         const key = pathKey(directory)
         const existing = projects.find((project) => pathKey(project.worktree) === key)
         const record = records.find((item) => pathKey(item.directory) === key)
-        const metadata = record ? serverSync().data.project.find((project) => project.id === record.projectID) : undefined
+        const metadata = record
+          ? serverSync().data.project.find((project) => project.id === record.projectID)
+          : undefined
         return {
           ...metadata,
           ...existing,
@@ -490,10 +493,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         }
       })
     })
-    const replayedRegistrations = new Set<string>()
-    const registerDirectory = (directory: string) => {
+    const syncRegistration = (directory: string) => {
       const key = pathKey(directory)
-      replayedRegistrations.add(key)
       return serverSync()
         .project.registerDirectory(directory)
         .then((records) => {
@@ -518,8 +519,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           server.projects.confirmRegistration(directory)
           continue
         }
-        if (replayedRegistrations.has(key)) continue
-        void registerDirectory(directory)
+        void syncRegistration(directory)
       }
     })
     const list = createMemo(() => {
@@ -653,7 +653,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
         register(directory: string) {
           server.projects.registerIntent(directory)
-          void registerDirectory(directory)
+          void syncRegistration(directory)
         },
         close(directory: string) {
           server.projects.close(directory)

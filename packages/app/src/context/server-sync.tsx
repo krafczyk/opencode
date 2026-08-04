@@ -193,6 +193,61 @@ function sameProjectDirectories(a: ProjectDirectories, b: ProjectDirectories) {
   )
 }
 
+/** Coordinates project-directory responses so only the latest request for each project updates local state. */
+export function createProjectDirectoryCoordinator() {
+  const revisions = new Map<string, number>()
+  const registrations = new Map<string, Promise<ProjectDirectories>>()
+
+  const nextRevision = (projectID: string) => {
+    const revision = (revisions.get(projectID) ?? 0) + 1
+    revisions.set(projectID, revision)
+    return revision
+  }
+
+  const current = (projectID: string, revision: number) => revisions.get(projectID) === revision
+
+  return {
+    async refresh(
+      projectID: string,
+      request: () => Promise<ProjectDirectories>,
+      apply: (projectID: string, directories: ProjectDirectories) => void,
+    ) {
+      const revision = nextRevision(projectID)
+      const directories = await request()
+      if (current(projectID, revision)) apply(projectID, directories)
+      return directories
+    },
+    register(
+      directory: string,
+      project: () => Promise<Pick<Project, "id">>,
+      request: () => Promise<ProjectDirectories>,
+      apply: (projectID: string, directories: ProjectDirectories) => void,
+    ) {
+      const key = directoryKey(directory)
+      const existing = registrations.get(key)
+      if (existing) return existing
+
+      const pending = project().then((info) => {
+        const revision = nextRevision(info.id)
+        return request().then((directories) => {
+          if (current(info.id, revision)) apply(info.id, directories)
+          return directories
+        })
+      })
+      registrations.set(key, pending)
+      void pending.then(
+        () => {
+          if (registrations.get(key) === pending) registrations.delete(key)
+        },
+        () => {
+          if (registrations.get(key) === pending) registrations.delete(key)
+        },
+      )
+      return pending
+    },
+  }
+}
+
 function makeQueryOptionsApi(
   scope: ServerScope,
   serverSDK: () => OpencodeClient,
@@ -307,6 +362,11 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const queryClient = useQueryClient()
   const [projectDirectories, setProjectDirectories] = createStore<Record<string, ProjectDirectories>>({})
+  const projectDirectoryCoordinator = createProjectDirectoryCoordinator()
+  const writeProjectDirectories = (projectID: string, directories: ProjectDirectories) => {
+    if (sameProjectDirectories(projectDirectories[projectID] ?? [], directories)) return
+    setProjectDirectories(projectID, directories)
+  }
   const homeSessions = createHomeSessionIndexCache(queryClient, ServerConnection.key(serverSDK.server))
   const refreshProviders = () =>
     queryClient.refetchQueries({
@@ -317,7 +377,6 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   let bootingRoot = false
   let eventFrame: number | undefined
   let eventTimer: ReturnType<typeof setTimeout> | undefined
-  const projectDirectoryRefreshVersion = new Map<string, number>()
 
   onCleanup(() => {
     if (eventFrame !== undefined) cancelAnimationFrame(eventFrame)
@@ -326,26 +385,20 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const loadProjectDirectories = async (projectID: string, directory: string) => {
     if ((await serverSDK.protocol) === "v1") return projectDirectories[projectID] ?? []
-    const version = (projectDirectoryRefreshVersion.get(projectID) ?? 0) + 1
-    projectDirectoryRefreshVersion.set(projectID, version)
-    const result = await serverSDK.client.project.directories({ projectID, directory })
-    const directories = result.data ?? []
-    if (projectDirectoryRefreshVersion.get(projectID) !== version) return directories
-    if (sameProjectDirectories(projectDirectories[projectID] ?? [], directories)) return directories
-    setProjectDirectories(projectID, directories)
-    return directories
+    return projectDirectoryCoordinator.refresh(
+      projectID,
+      () => serverSDK.client.project.directories({ projectID, directory }).then((result) => result.data ?? []),
+      writeProjectDirectories,
+    )
   }
 
   const hydrateProjectDirectories = (projects: Project[]) =>
     void Promise.all(
-      projects.map((project) =>
-        loadProjectDirectories(project.id, project.worktree).catch(() => undefined),
-      ),
+      projects.map((project) => loadProjectDirectories(project.id, project.worktree).catch(() => undefined)),
     )
 
   const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
     setGlobalStore("project", next)
-    hydrateProjectDirectories(globalStore.project)
   }
 
   const refreshProjectDirectories = (projectID: string) => {
@@ -356,6 +409,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   const setBootStore = ((...input: unknown[]) => {
     if (input[0] === "project" && Array.isArray(input[1])) {
       setProjects(input[1] as Project[])
+      hydrateProjectDirectories(input[1] as Project[])
       return input[1]
     }
     return (setGlobalStore as (...args: unknown[]) => unknown)(...input)
@@ -696,11 +750,12 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     },
     async registerDirectory(directory: string) {
       if ((await serverSDK.protocol) !== "v1") {
-        const result = await serverSDK.client.project.registerCurrentDirectory({ directory })
-        const directories = result.data ?? []
-        const project = await serverSDK.api.project.current({ location: { directory } })
-        setProjectDirectories(project.id, directories)
-        return directories
+        return projectDirectoryCoordinator.register(
+          directory,
+          () => serverSDK.api.project.current({ location: { directory } }),
+          () => serverSDK.client.project.registerCurrentDirectory({ directory }).then((result) => result.data ?? []),
+          writeProjectDirectories,
+        )
       }
       throw new Error("Project directory registration requires a V2 server")
     },

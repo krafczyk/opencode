@@ -3,7 +3,7 @@ import { $ } from "bun"
 import fs from "fs/promises"
 import path from "path"
 import { eq } from "drizzle-orm"
-import { Effect, Fiber, Stream } from "effect"
+import { Deferred, Effect, Fiber, Stream } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AbsolutePath } from "@opencode-ai/core/schema"
@@ -193,7 +193,9 @@ describe("ProjectCopy", () => {
 
       expect(yield* directories.register({ projectID: input.projectID, directory: created.directory })).toBe(true)
       expect(
-        yield* copy.remove({ projectID: input.projectID, directory: created.directory, force: false }).pipe(Effect.flip),
+        yield* copy
+          .remove({ projectID: input.projectID, directory: created.directory, force: false })
+          .pipe(Effect.flip),
       ).toBeInstanceOf(ProjectCopy.InvalidDirectoryError)
       expect(yield* Effect.promise(() => fs.stat(created.directory).then((item) => item.isDirectory()))).toBe(true)
       expect(yield* directories.get({ projectID: input.projectID, directory: created.directory })).toEqual({
@@ -460,6 +462,45 @@ describe("ProjectCopy", () => {
         kind: "user",
         strategy: null,
         source_directory: null,
+      })
+    }),
+  )
+
+  it.live("rechecks a stale missing directory after registration recreates it", () =>
+    Effect.gen(function* () {
+      const input = yield* setup()
+      const copy = yield* ProjectCopy.Service
+      const directories = yield* ProjectDirectories.Service
+      const stale = abs(`${input.root.path}-refresh-race`)
+      const listed = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      yield* input.db
+        .insert(ProjectDirectoryTable)
+        .values({ project_id: input.projectID, directory: stale, kind: "managed", strategy: "test/refresh-race" })
+        .run()
+        .pipe(Effect.orDie)
+      yield* copy.register({
+        id: ProjectCopy.StrategyID.make("test/refresh-race"),
+        create: () => Effect.die("unused"),
+        remove: () => Effect.die("unused"),
+        list: () =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(listed, undefined)
+            yield* Deferred.await(release)
+            return []
+          }),
+      })
+
+      const refresh = yield* copy.refresh({ projectID: input.projectID }).pipe(Effect.forkScoped)
+      yield* Deferred.await(listed)
+      yield* Effect.promise(() => fs.mkdir(stale))
+      yield* directories.register({ projectID: input.projectID, directory: stale })
+      yield* Deferred.succeed(release, undefined)
+
+      expect(yield* Fiber.join(refresh)).toEqual({ updated: [], removed: [] })
+      expect(yield* directories.get({ projectID: input.projectID, directory: stale })).toEqual({
+        directory: stale,
+        kind: "user",
       })
     }),
   )

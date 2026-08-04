@@ -4993,6 +4993,7 @@ export type PermissionV2Request = {
 export type PermissionSavedInfo = {
   id: string
   projectID: string
+  directory?: string
   action: string
   resource: string
 }

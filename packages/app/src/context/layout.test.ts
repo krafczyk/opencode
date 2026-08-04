@@ -85,14 +85,34 @@ describe("project directory presentation", () => {
   })
 
   test("keeps unresolved and failed persisted paths selectable without managed actions", () => {
-    const presentation = presentProjectDirectories(
-      ["/checkout/pending", "/checkout/failed"],
-      [],
-    )
+    const presentation = presentProjectDirectories(["/checkout/pending", "/checkout/failed"], [])
 
     expect(presentation.roots).toEqual(["/checkout/pending", "/checkout/failed"])
     expect(presentation.parent("/checkout/pending")).toBeUndefined()
     expect(canRemoveManagedDirectory(undefined)).toBe(false)
+  })
+
+  test("keeps a pending explicit add above a stale managed record", () => {
+    const presentation = presentProjectDirectories(
+      ["/checkout/root", "/checkout/stale"],
+      [
+        { projectID: "repo", directory: "/checkout/root", kind: "user", fallbackDirectory: "/checkout/root" },
+        {
+          projectID: "repo",
+          directory: "/checkout/stale",
+          kind: "managed",
+          strategy: "worktree",
+          sourceDirectory: "/checkout/root",
+          fallbackDirectory: "/checkout/root",
+        },
+      ],
+      ["/checkout/stale"],
+    )
+
+    expect(presentation.roots).toEqual(["/checkout/root", "/checkout/stale"])
+    expect(presentation.parent("/checkout/stale")).toBeUndefined()
+    expect(presentation.children("/checkout/root")).toEqual([])
+    expect(canRemoveManagedDirectory(presentation.managed("/checkout/stale"))).toBe(false)
   })
 
   test("groups managed copies by exact persisted source without collapsing another user checkout", () => {

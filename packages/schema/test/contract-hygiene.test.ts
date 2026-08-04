@@ -6,6 +6,8 @@ import { Model } from "../src/model"
 import { Project } from "../src/project"
 import { Pty } from "../src/pty"
 import { Question } from "../src/question"
+import { PermissionSaved } from "../src/permission-saved"
+import { ProjectID } from "../src/project-id"
 import { Session } from "../src/session"
 import { SessionEvent } from "../src/session-event"
 import { SessionTodo } from "../src/session-todo"
@@ -17,6 +19,20 @@ describe("contract hygiene", () => {
     expect(Schema.decodeUnknownSync(Value)({ value: "1" })).toEqual({ value: 1 })
     expect(Schema.encodeSync(Value)({ value: 1 })).toEqual({ value: "1" })
     expect(Schema.encodeSync(Value)({ value: undefined })).toEqual({})
+  })
+
+  test("saved permissions omit an undefined directory while preserving a supplied directory", () => {
+    const saved = {
+      id: PermissionSaved.ID.make("psv_test"),
+      projectID: ProjectID.make("pro_test"),
+      action: "read",
+      resource: "src/*",
+    }
+    expect(Schema.encodeSync(PermissionSaved.Info)({ ...saved, directory: undefined })).toEqual(saved)
+    expect(Schema.encodeSync(PermissionSaved.Info)({ ...saved, directory: "/project" })).toEqual({
+      ...saved,
+      directory: "/project",
+    })
   })
 
   test("todo status and priority preserve arbitrary strings", () => {

@@ -144,6 +144,8 @@ export const {
     const fullSyncedSessions = new Set<string>()
     const syncingSessions = new Map<string, Promise<void>>()
     const hydratingSessions = new Map<string, { messages: Set<string>; parts: Set<string> }>()
+    let sessionListVersion = 0
+    let sessionListAbort: AbortController | undefined
     const touchMessage = (sessionID: string, messageID: string) => {
       hydratingSessions.get(sessionID)?.messages.add(messageID)
     }
@@ -153,22 +155,66 @@ export const {
 
     function sessionListQuery(): { directory?: string; scope?: "project"; path?: string } {
       if (!kv.get("session_directory_filter_enabled", true)) return { scope: "project" }
-      if (!project.data.instance.path.worktree || !project.data.instance.path.directory) return { scope: "project" }
-      const directory = project.data.instance.path.directory
-      const relative = path
-        .relative(path.resolve(project.data.instance.path.worktree), directory)
-        .replaceAll("\\", "/")
-      if (!relative) return { directory }
-      return {
-        directory,
-        path: relative,
+      if (!project.data.instance.path.directory) return { scope: "project" }
+      return { directory: project.data.instance.path.directory }
+    }
+
+    function sessionMatchesActiveDirectory(directory: string, workspaceID?: string) {
+      if (sessionListQuery().scope === "project") return true
+      if (path.resolve(directory) !== path.resolve(project.instance.directory())) return false
+      return workspaceID === project.workspace.current()
+    }
+
+    function invalidateSessionList() {
+      sessionListVersion += 1
+      sessionListAbort?.abort()
+      sessionListAbort = undefined
+    }
+
+    async function listSessions() {
+      const abort = new AbortController()
+      sessionListAbort?.abort()
+      sessionListAbort = abort
+      const version = ++sessionListVersion
+      const query = sessionListQuery()
+      const workspace = project.workspace.current()
+      try {
+        const response = await sdk.client.session.list(
+          {
+            start: Date.now() - 30 * 24 * 60 * 60 * 1000,
+            workspace,
+            ...query,
+          },
+          { signal: abort.signal },
+        )
+        return {
+          version,
+          query,
+          workspace,
+          sessions: (response.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)),
+        }
+      } catch (error) {
+        if (abort.signal.aborted) return
+        throw error
+      } finally {
+        if (sessionListAbort === abort) sessionListAbort = undefined
       }
     }
 
-    function listSessions() {
-      return sdk.client.session
-        .list({ start: Date.now() - 30 * 24 * 60 * 60 * 1000, ...sessionListQuery() })
-        .then((x) => (x.data ?? []).toSorted((a, b) => a.id.localeCompare(b.id)))
+    function sessionListIsCurrent(result: NonNullable<Awaited<ReturnType<typeof listSessions>>>) {
+      const query = sessionListQuery()
+      return (
+        result.version === sessionListVersion &&
+        result.workspace === project.workspace.current() &&
+        result.query.scope === query.scope &&
+        result.query.directory === query.directory
+      )
+    }
+
+    async function refreshSessions() {
+      const result = await listSessions()
+      if (!result || !sessionListIsCurrent(result)) return
+      setStore("session", reconcile(result.sessions))
     }
 
     event.subscribe((event, { directory, workspace }) => {
@@ -269,6 +315,7 @@ export const {
           break
 
         case "session.deleted": {
+          invalidateSessionList()
           const result = search(store.session, event.properties.info.id, (s) => s.id)
           if (result.found) {
             setStore(
@@ -281,8 +328,9 @@ export const {
           break
         }
         case "session.updated": {
+          invalidateSessionList()
           const result = search(store.session, event.properties.info.id, (s) => s.id)
-          if (path.resolve(event.properties.info.directory) !== path.resolve(project.instance.directory())) {
+          if (!sessionMatchesActiveDirectory(event.properties.info.directory, event.properties.info.workspaceID)) {
             if (!result.found) break
             setStore(
               "session",
@@ -306,8 +354,11 @@ export const {
         }
 
         case "session.next.moved": {
+          invalidateSessionList()
           const result = search(store.session, event.properties.sessionID, (s) => s.id)
-          if (path.resolve(event.properties.location.directory) !== path.resolve(project.instance.directory())) {
+          if (
+            !sessionMatchesActiveDirectory(event.properties.location.directory, event.properties.location.workspaceID)
+          ) {
             if (!result.found) break
             setStore(
               "session",
@@ -318,7 +369,7 @@ export const {
             break
           }
           if (!result.found) {
-            void listSessions().then((sessions) => setStore("session", reconcile(sessions)))
+            void refreshSessions()
             break
           }
           setStore(
@@ -531,7 +582,7 @@ export const {
               setStore("console_state", reconcile(consoleState))
               setStore("agent", reconcile(agents))
               setStore("config", reconcile(config))
-              if (sessions !== undefined) setStore("session", reconcile(sessions))
+              if (sessions && sessionListIsCurrent(sessions)) setStore("session", reconcile(sessions.sessions))
             })
           })
         })
@@ -539,7 +590,14 @@ export const {
           if (store.status !== "complete") setStore("status", "partial")
           // non-blocking
           void Promise.all([
-            ...(args.continue ? [] : [sessionListPromise.then((sessions) => setStore("session", reconcile(sessions)))]),
+            ...(args.continue
+              ? []
+              : [
+                  sessionListPromise.then((result) => {
+                    if (!result || !sessionListIsCurrent(result)) return
+                    setStore("session", reconcile(result.sessions))
+                  }),
+                ]),
             consoleStatePromise.then((consoleState) => setStore("console_state", reconcile(consoleState))),
             sdk.client.command.list({ workspace }).then((x) => setStore("command", reconcile(x.data ?? []))),
             sdk.client.lsp.status({ workspace }).then((x) => setStore("lsp", reconcile(x.data ?? []))),
@@ -599,8 +657,7 @@ export const {
           return sessionListQuery()
         },
         async refresh() {
-          const list = await listSessions()
-          setStore("session", reconcile(list))
+          await refreshSessions()
         },
         status(sessionID: string) {
           const session = result.session.get(sessionID)

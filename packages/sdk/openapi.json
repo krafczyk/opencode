@@ -10199,7 +10199,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InvalidRequestError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
                 }
               }
             }
@@ -30674,6 +30681,9 @@
             "type": "string"
           },
           "projectID": {
+            "type": "string"
+          },
+          "directory": {
             "type": "string"
           },
           "action": {

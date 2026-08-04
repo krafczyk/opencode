@@ -307,6 +307,34 @@ describe("PermissionV2", () => {
     }),
   )
 
+  it.effect("does not treat an empty approval directory as a project-wide approval", () =>
+    Effect.gen(function* () {
+      yield* setup()
+      const saved = yield* PermissionSaved.Service
+      yield* saved.add({
+        projectID: Project.ID.global,
+        directory: "/project",
+        action: "read",
+        resources: ["allowed"],
+      })
+      yield* saved.add({
+        projectID: Project.ID.global,
+        directory: "" as never,
+        action: "read",
+        resources: ["must-not-save"],
+      })
+
+      expect(yield* saved.list({ projectID: Project.ID.global, directory: "" })).toEqual([])
+      const service = yield* PermissionV2.Service
+      expect(yield* service.ask(assertion({ resources: ["allowed"] }))).toMatchObject({ effect: "allow" })
+      expect(
+        yield* service.ask(assertion({ id: PermissionV2.ID.create("per_empty"), resources: ["must-not-save"] })),
+      ).toMatchObject({
+        effect: "ask",
+      })
+    }),
+  )
+
   it.effect("defects when an asked permission is declined", () =>
     Effect.gen(function* () {
       yield* setup()

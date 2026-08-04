@@ -8,13 +8,19 @@ export type ProjectDirectoryRecord = ProjectDirectories[number] & {
 }
 
 /** Derives independently selectable roots and managed-copy children from authoritative directory records. */
-export function presentProjectDirectories(entries: string[], records: ProjectDirectoryRecord[]) {
+export function presentProjectDirectories(
+  entries: string[],
+  records: ProjectDirectoryRecord[],
+  pending: string[] = [],
+) {
   const byDirectory = new Map(records.map((record) => [pathKey(record.directory), record]))
+  const pendingKeys = new Set(pending.map(pathKey))
   const parents = new Map<string, string>()
   const children = new Map<string, ProjectDirectoryRecord[]>()
 
   for (const record of records) {
     if (record.kind !== "managed") continue
+    if (pendingKeys.has(pathKey(record.directory))) continue
     const parent = record.sourceDirectory ?? record.fallbackDirectory
     if (!parent || pathKey(parent) === pathKey(record.directory)) continue
     const key = pathKey(parent)
@@ -38,6 +44,12 @@ export function presentProjectDirectories(entries: string[], records: ProjectDir
     known.add(key)
     roots.push(parent)
   }
+  for (const directory of pending) {
+    const key = pathKey(directory)
+    if (known.has(key)) continue
+    known.add(key)
+    roots.push(directory)
+  }
 
   return {
     roots,
@@ -48,6 +60,7 @@ export function presentProjectDirectories(entries: string[], records: ProjectDir
       return children.get(pathKey(directory)) ?? []
     },
     managed(directory: string) {
+      if (pendingKeys.has(pathKey(directory))) return
       const record = byDirectory.get(pathKey(directory))
       return record?.kind === "managed" ? record : undefined
     },

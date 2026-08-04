@@ -24,7 +24,7 @@ export type ListInput = typeof ListInput.Type
 /** Persists new approvals for one established project directory. */
 export const AddInput = Schema.Struct({
   projectID: ProjectV2.ID,
-  directory: Schema.String,
+  directory: Schema.NonEmptyString,
   action: Schema.String,
   resources: Schema.Array(Schema.String),
 }).annotate({ identifier: "PermissionSaved.AddInput" })
@@ -43,7 +43,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/v2
 
 function listCondition(input?: ListInput) {
   if (!input?.projectID) return
-  if (!input.directory) return eq(PermissionTable.project_id, input.projectID)
+  if (input.directory === undefined) return eq(PermissionTable.project_id, input.projectID)
   return and(
     eq(PermissionTable.project_id, input.projectID),
     or(eq(PermissionTable.directory, input.directory), isNull(PermissionTable.directory)),
@@ -56,17 +56,12 @@ const layer = Layer.effect(
     const { db } = yield* Database.Service
 
     const list = Effect.fn("PermissionSaved.list")(function* (input?: ListInput) {
-      const rows = yield* db
-        .select()
-        .from(PermissionTable)
-        .where(listCondition(input))
-        .all()
-        .pipe(Effect.orDie)
+      const rows = yield* db.select().from(PermissionTable).where(listCondition(input)).all().pipe(Effect.orDie)
       return rows.map(
         (row): Info => ({
           id: row.id,
           projectID: row.project_id,
-          ...(row.directory ? { directory: row.directory } : {}),
+          ...(row.directory !== null ? { directory: row.directory } : {}),
           action: row.action,
           resource: row.resource,
         }),
@@ -74,7 +69,7 @@ const layer = Layer.effect(
     })
 
     const add = Effect.fn("PermissionSaved.add")(function* (input: AddInput) {
-      if (!input.resources.length) return
+      if (!input.directory || !input.resources.length) return
       yield* db
         .insert(PermissionTable)
         .values(

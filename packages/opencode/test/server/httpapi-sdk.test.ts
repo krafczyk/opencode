@@ -408,6 +408,23 @@ describe("HttpApi SDK", () => {
     ),
   )
 
+  httpapi(
+    "registers the configured directory through the generated SDK POST client",
+    withProject("raw", {}, ({ directory }) =>
+      Effect.gen(function* () {
+        const encodedDirectory = path.join(directory, "sdk%2Fdirectory")
+        yield* FSUtil.Service.use((fs) => fs.ensureDir(encodedDirectory))
+        let request: Request | undefined
+        const sdk = yield* client("raw", directory, { onRequest: (value) => (request = value) })
+        const registered = yield* call(() => sdk.project.registerCurrentDirectory({ directory: encodedDirectory }))
+
+        expect(registered.response.status).toBe(200)
+        expect(new URL(request!.url).searchParams.get("directory")).toBe(encodedDirectory)
+        expect(decodeURIComponent(request!.headers.get("x-opencode-directory")!)).toBe(directory)
+      }),
+    ),
+  )
+
   serverPathParity("matches generated SDK global and control behavior", (serverPath) =>
     Effect.gen(function* () {
       const sdk = yield* client(serverPath)

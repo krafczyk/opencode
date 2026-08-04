@@ -8,6 +8,7 @@ import * as Fence from "@/server/shared/fence"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute, workspaceProxyURL } from "@/server/shared/workspace-routing"
 import { NotFoundError } from "@/storage/storage"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Context, Data, Effect, Layer, Option, Schema } from "effect"
 import { HttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
@@ -89,7 +90,23 @@ function selectedV2WorkspaceID(
 }
 
 function defaultDirectory(request: HttpServerRequest.HttpServerRequest, url: URL): string {
-  return url.searchParams.get("directory") || request.headers["x-opencode-directory"] || process.cwd()
+  const query = url.searchParams.get("directory")
+  if (query) return FSUtil.resolve(query)
+  const header = request.headers["x-opencode-directory"]
+  if (header) return FSUtil.resolve(decode(header))
+  return FSUtil.resolve(process.cwd())
+}
+
+function decode(input: string): string {
+  try {
+    return decodeURIComponent(input)
+  } catch {
+    return input
+  }
+}
+
+function isCurrentDirectoryRegistration(request: HttpServerRequest.HttpServerRequest, url: URL): boolean {
+  return request.method === "POST" && url.pathname === "/project/directories/current"
 }
 
 function shouldStayOnControlPlane(request: HttpServerRequest.HttpServerRequest, url: URL): boolean {
@@ -131,9 +148,22 @@ function proxyRemote(
       })
     }
     const proxyURL = workspaceProxyURL(target.url, url)
+    // A selected workspace owns its directory. Never relay caller location hints to its server.
+    proxyURL.searchParams.delete("directory")
+    proxyURL.searchParams.delete("location[directory]")
+    proxyURL.searchParams.delete("location[workspace]")
     const headers = request.headers as Record<string, string>
     if (headers["upgrade"]?.toLowerCase() === "websocket") return yield* HttpApiProxy.websocket(request, proxyURL)
-    const response = yield* HttpApiProxy.http(client, proxyURL, target.headers, request)
+    const registration = isCurrentDirectoryRegistration(request, url)
+    if (registration && !workspace.directory) {
+      return HttpServerResponse.text("Workspace has no directory authority", {
+        status: 400,
+        contentType: "text/plain; charset=utf-8",
+      })
+    }
+    const authority = new Headers(target.headers)
+    if (registration) authority.set("x-opencode-directory", workspace.directory!)
+    const response = yield* HttpApiProxy.http(client, proxyURL, authority, request)
     const sync = Fence.parse(new Headers(response.headers))
     if (sync) {
       const syncFailure = yield* Fence.wait(
@@ -158,7 +188,11 @@ function planWorkspaceRequest(
   return Effect.gen(function* () {
     const target = yield* resolveTarget(workspace)
     if (target.type === "remote") return RequestPlan.Remote({ request, workspace, target, url })
-    return RequestPlan.Local({ directory: target.directory, workspaceID: workspace.id, authority: "workspace" })
+    return RequestPlan.Local({
+      directory: FSUtil.resolve(target.directory),
+      workspaceID: workspace.id,
+      authority: "workspace",
+    })
   })
 }
 
@@ -184,7 +218,7 @@ function planRequest(
     }
 
     return RequestPlan.Local({
-      directory: session?.directory || defaultDirectory(request, url),
+      directory: session?.directory ? FSUtil.resolve(session.directory) : defaultDirectory(request, url),
       workspaceID: envWorkspaceID ?? workspaceID,
       authority:
         session?.directory || url.searchParams.get("directory") || request.headers["x-opencode-directory"]

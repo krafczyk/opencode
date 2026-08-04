@@ -158,12 +158,29 @@ export function make(input: {
     return loaded
   })
 
-  const persistedDirectory = Effect.fn("ACP.persistedDirectory")(function* (sessionId: string, cwd: string) {
+  const persistedDirectory = Effect.fn("ACP.persistedDirectory")(function* (sessionId: string) {
     const persisted = yield* request(
-      () => input.sdk.session.get({ directory: cwd, sessionID: sessionId }, { throwOnError: true }),
+      () => input.sdk.v2.session.get({ sessionID: sessionId }, { throwOnError: true }),
       "session",
     )
-    return persisted.directory ?? cwd
+    return persisted.data.location.directory
+  })
+
+  const reconcileSession = Effect.fn("ACP.reconcileSession")(function* (sessionId: string) {
+    const loaded = yield* session.get(sessionId)
+    const cwd = yield* persistedDirectory(loaded.id)
+    if (cwd === loaded.cwd) {
+      yield* registerMcpServers(input.sdk, registeredMcp, loaded.cwd, loaded.id, loaded.mcpServers)
+      return loaded
+    }
+
+    sessionSnapshots.delete(loaded.id)
+    registeredMcp.delete(loaded.id)
+    const current = yield* session.rebind(loaded.id, cwd)
+    const snapshot = yield* directorySnapshot(cwd)
+    yield* registerMcpServers(input.sdk, registeredMcp, cwd, current.id, current.mcpServers)
+    yield* sendAvailableCommands(input.connection, current.id, snapshot)
+    return current
   })
 
   const newSession = Effect.fn("ACP.newSession")(function* (params: NewSessionRequest) {
@@ -215,7 +232,7 @@ export function make(input: {
   })
 
   const loadSession = Effect.fn("ACP.loadSession")(function* (params: LoadSessionRequest) {
-    const cwd = yield* persistedDirectory(params.sessionId, params.cwd)
+    const cwd = yield* persistedDirectory(params.sessionId)
     const snapshot = yield* directorySnapshot(cwd)
     const messages = yield* request(
       () => input.sdk.session.messages({ directory: cwd, sessionID: params.sessionId }, { throwOnError: true }),
@@ -293,14 +310,11 @@ export function make(input: {
   })
 
   const resumeSession = Effect.fn("ACP.resumeSession")(function* (params: ResumeSessionRequest) {
-    const cwd = yield* persistedDirectory(params.sessionId, params.cwd)
+    const cwd = yield* persistedDirectory(params.sessionId)
     const snapshot = yield* directorySnapshot(cwd)
     const messages = yield* request(
       () =>
-        input.sdk.session.messages(
-          { directory: cwd, sessionID: params.sessionId, limit: 20 },
-          { throwOnError: true },
-        ),
+        input.sdk.session.messages({ directory: cwd, sessionID: params.sessionId, limit: 20 }, { throwOnError: true }),
       "session",
     )
     const restored = restoreFromMessages(messages.map((item) => item.info))
@@ -339,22 +353,25 @@ export function make(input: {
   })
 
   const closeSession = Effect.fn("ACP.closeSession")(function* (params: CloseSessionRequest) {
+    const existing = yield* session.tryGet(params.sessionId)
+    if (!existing) return {}
+    const current = yield* reconcileSession(params.sessionId)
     const removed = yield* session.remove(params.sessionId)
     registeredMcp.delete(params.sessionId)
     sessionSnapshots.delete(params.sessionId)
     if (!removed) return {}
 
-    yield* abortBackingSession(removed)
+    yield* abortBackingSession(current)
     return {}
   })
 
   const cancel = Effect.fn("ACP.cancel")(function* (params: CancelNotification) {
-    const current = yield* session.get(params.sessionId)
+    const current = yield* reconcileSession(params.sessionId)
     yield* abortBackingSession(current)
   })
 
   const forkSession = Effect.fn("ACP.forkSession")(function* (params: ForkSessionRequest) {
-    const cwd = yield* persistedDirectory(params.sessionId, params.cwd)
+    const cwd = yield* persistedDirectory(params.sessionId)
     const forked = yield* request(
       () =>
         input.sdk.session.fork(
@@ -402,7 +419,7 @@ export function make(input: {
   const setSessionConfigOption = Effect.fn("ACP.setSessionConfigOption")(function* (
     params: SetSessionConfigOptionRequest,
   ) {
-    const current = yield* session.get(params.sessionId)
+    const current = yield* reconcileSession(params.sessionId)
     const snapshot = yield* configSnapshot(current)
     if (typeof params.value !== "string") {
       return yield* new ACPError.InvalidConfigOptionError({ configId: params.configId })
@@ -457,7 +474,7 @@ export function make(input: {
   })
 
   const setSessionMode = Effect.fn("ACP.setSessionMode")(function* (params: SetSessionModeRequest) {
-    const current = yield* session.get(params.sessionId)
+    const current = yield* reconcileSession(params.sessionId)
     const snapshot = yield* configSnapshot(current)
     if (!snapshot.availableModes.some((mode) => mode.id === params.modeId)) {
       return yield* new ACPError.InvalidModeError({ mode: params.modeId })
@@ -467,7 +484,7 @@ export function make(input: {
   })
 
   const setSessionModel = Effect.fn("ACP.setSessionModel")(function* (params: SetSessionModelRequest) {
-    const current = yield* session.get(params.sessionId)
+    const current = yield* reconcileSession(params.sessionId)
     const snapshot = yield* configSnapshot(current)
     const selected = yield* parseSelectedModel(snapshot, params.modelId)
     yield* session
@@ -494,18 +511,7 @@ export function make(input: {
     setSessionMode,
     setSessionModel,
     prompt: Effect.fn("ACP.prompt")(function* (params: PromptRequest) {
-      const loaded = yield* session.get(params.sessionId)
-      const cwd = yield* persistedDirectory(loaded.id, loaded.cwd)
-      const current =
-        cwd === loaded.cwd
-          ? loaded
-          : yield* Effect.gen(function* () {
-              sessionSnapshots.delete(loaded.id)
-              registeredMcp.delete(loaded.id)
-              const rebound = yield* session.rebind(loaded.id, cwd)
-              yield* registerMcpServers(input.sdk, registeredMcp, cwd, rebound.id, rebound.mcpServers)
-              return rebound
-            })
+      const current = yield* reconcileSession(params.sessionId)
       const snapshot = yield* directorySnapshot(current.cwd)
       const selected = current.model ?? selectDefaultModel(snapshot)
       if (!current.model) {

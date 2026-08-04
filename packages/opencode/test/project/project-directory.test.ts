@@ -1,10 +1,11 @@
 import { describe, expect } from "bun:test"
 import { $ } from "bun"
 import path from "path"
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Effect } from "effect"
+import { HttpApiError } from "effect/unstable/httpapi"
 import { Hash } from "@opencode-ai/core/util/hash"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Database } from "@opencode-ai/core/database/database"
@@ -74,6 +75,38 @@ describe("Project directory persistence", () => {
     }),
   )
 
+  it.live("rejects registration after the directory disappears without changing its classification", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped({ git: true })
+      const project = yield* Project.Service
+      const current = yield* project.fromDirectory(tmp)
+      const missing = AbsolutePath.make(tmp + "-registration-missing")
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(ProjectDirectoryTable)
+        .values({
+          project_id: current.project.id,
+          directory: missing,
+          kind: "managed",
+          strategy: "git_worktree",
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      const error = yield* project
+        .registerDirectory({ directory: missing, projectID: current.project.id })
+        .pipe(Effect.flip)
+
+      expect(error).toBeInstanceOf(HttpApiError.BadRequest)
+      expect(yield* directories(current.project.id)).toContainEqual({
+        directory: missing,
+        kind: "managed",
+        strategy: "git_worktree",
+        sourceDirectory: undefined,
+      })
+    }),
+  )
+
   it.live("stores an opened linked worktree directory", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({ git: true })
@@ -137,7 +170,12 @@ describe("Project directory persistence", () => {
       expect(yield* directories(main.project.id)).toEqual(
         [
           { directory: AbsolutePath.make(tmp), kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
-          { directory: AbsolutePath.make(clone), kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
+          {
+            directory: AbsolutePath.make(clone),
+            kind: "user" as const,
+            strategy: undefined,
+            sourceDirectory: undefined,
+          },
         ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
       )
     }),
@@ -194,19 +232,39 @@ describe("Project directory persistence", () => {
     }),
   )
 
-  it.live("re-keys directories, sessions, workspaces, and permissions when the project id changes", () =>
+  it.live("reconciles only the changing directory when a project id changes", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({ git: true })
       const project = yield* Project.Service
       const original = yield* project.fromDirectory(tmp)
       const userDirectory = AbsolutePath.make(tmp + "-user-checkout")
+      const bare = tmp + "-user-checkout-bare"
       const managedDirectory = AbsolutePath.make(tmp + "-managed-copy")
       const collision = AbsolutePath.make(tmp + "-classification-collision")
+      const managedCollision = AbsolutePath.make(tmp + "-managed-collision")
+      yield* Effect.addFinalizer(() => Effect.promise(() => $`rm -rf ${bare} ${userDirectory}`.quiet().nothrow()))
+      yield* Effect.promise(() => $`git clone --bare ${tmp} ${bare}`.quiet())
+      yield* Effect.promise(() => $`git clone ${bare} ${userDirectory}`.quiet())
+      yield* project.fromDirectory(userDirectory)
       const { db } = yield* Database.Service
+      yield* db
+        .update(ProjectDirectoryTable)
+        .set({
+          kind: "managed",
+          strategy: "git_worktree",
+          source_directory: AbsolutePath.make(tmp + "-source-a"),
+        })
+        .where(
+          and(
+            eq(ProjectDirectoryTable.project_id, original.project.id),
+            eq(ProjectDirectoryTable.directory, AbsolutePath.make(tmp)),
+          ),
+        )
+        .run()
+        .pipe(Effect.orDie)
       yield* db
         .insert(ProjectDirectoryTable)
         .values([
-          { project_id: original.project.id, directory: userDirectory, kind: "user" },
           {
             project_id: original.project.id,
             directory: managedDirectory,
@@ -215,6 +273,13 @@ describe("Project directory persistence", () => {
             source_directory: AbsolutePath.make(tmp),
           },
           { project_id: original.project.id, directory: collision, kind: "user" },
+          {
+            project_id: original.project.id,
+            directory: managedCollision,
+            kind: "managed",
+            strategy: "git_worktree",
+            source_directory: AbsolutePath.make(tmp + "-source-a"),
+          },
         ])
         .run()
         .pipe(Effect.orDie)
@@ -222,6 +287,8 @@ describe("Project directory persistence", () => {
       const sessionID = SessionSchema.ID.make("ses_directory_migration")
       const workspaceID = WorkspaceV2.ID.make("wrk_directory_migration")
       const permissionID = PermissionSaved.ID.make("per_directory_migration")
+      const currentPermissionID = PermissionSaved.ID.make("per_directory_migration_current")
+      const collisionPermissionID = PermissionSaved.ID.make("per_directory_migration_collision")
       const targetPermissionID = PermissionSaved.ID.make("per_directory_migration_target")
       yield* Effect.promise(() =>
         $`git remote add origin git@github.com:project-directory-test/migration.git`.cwd(tmp).quiet(),
@@ -241,7 +308,15 @@ describe("Project directory persistence", () => {
         .pipe(Effect.orDie)
       yield* db
         .insert(ProjectDirectoryTable)
-        .values({ project_id: remoteID, directory: collision, kind: "managed", strategy: "git_worktree" })
+        .values([
+          {
+            project_id: remoteID,
+            directory: AbsolutePath.make(tmp),
+            kind: "managed",
+            strategy: "acme_worktree",
+            source_directory: AbsolutePath.make(tmp + "-source-b"),
+          },
+        ])
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -260,7 +335,33 @@ describe("Project directory persistence", () => {
         .pipe(Effect.orDie)
       yield* db
         .insert(WorkspaceTable)
-        .values({ id: workspaceID, project_id: original.project.id, type: "local", time_used: 1 })
+        .values({ id: workspaceID, project_id: original.project.id, type: "local", directory: tmp, time_used: 1 })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(PermissionTable)
+        .values({
+          id: currentPermissionID,
+          project_id: original.project.id,
+          directory: tmp,
+          action: "bash",
+          resource: "current",
+          time_created: 1,
+          time_updated: 1,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(PermissionTable)
+        .values({
+          id: collisionPermissionID,
+          project_id: original.project.id,
+          directory: tmp,
+          action: "bash",
+          resource: "collision",
+          time_created: 1,
+          time_updated: 1,
+        })
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -271,6 +372,19 @@ describe("Project directory persistence", () => {
           directory: "/project/a",
           action: "bash",
           resource: "*",
+          time_created: 1,
+          time_updated: 1,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(PermissionTable)
+        .values({
+          id: PermissionSaved.ID.make("per_directory_migration_collision_target"),
+          project_id: remoteID,
+          directory: tmp,
+          action: "bash",
+          resource: "collision",
           time_created: 1,
           time_updated: 1,
         })
@@ -292,10 +406,8 @@ describe("Project directory persistence", () => {
 
       yield* project.fromDirectory(tmp)
 
-      expect(yield* directories(original.project.id)).toEqual([])
-      expect(yield* directories(remoteID)).toEqual(
+      expect(yield* directories(original.project.id)).toEqual(
         [
-          { directory: AbsolutePath.make(tmp), kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
           { directory: userDirectory, kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
           {
             directory: managedDirectory,
@@ -304,24 +416,61 @@ describe("Project directory persistence", () => {
             sourceDirectory: AbsolutePath.make(tmp),
           },
           { directory: collision, kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
+          {
+            directory: managedCollision,
+            kind: "managed" as const,
+            strategy: "git_worktree",
+            sourceDirectory: AbsolutePath.make(tmp + "-source-a"),
+          },
+        ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
+      )
+      expect(yield* directories(remoteID)).toEqual(
+        [
+          {
+            directory: AbsolutePath.make(tmp),
+            kind: "managed" as const,
+            strategy: "acme_worktree",
+            sourceDirectory: AbsolutePath.make(tmp + "-source-b"),
+          },
         ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
       )
       expect(
-        yield* db.select({ projectID: SessionTable.project_id }).from(SessionTable).where(eq(SessionTable.id, sessionID)).get(),
-      ).toEqual({ projectID: remoteID })
-      expect(
-        yield* db.select({ projectID: WorkspaceTable.project_id }).from(WorkspaceTable).where(eq(WorkspaceTable.id, workspaceID)).get(),
+        yield* db
+          .select({ projectID: SessionTable.project_id })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get(),
       ).toEqual({ projectID: remoteID })
       expect(
         yield* db
-          .select({ id: PermissionTable.id, projectID: PermissionTable.project_id, directory: PermissionTable.directory })
+          .select({ projectID: WorkspaceTable.project_id })
+          .from(WorkspaceTable)
+          .where(eq(WorkspaceTable.id, workspaceID))
+          .get(),
+      ).toEqual({ projectID: remoteID })
+      expect(
+        yield* db
+          .select({
+            id: PermissionTable.id,
+            projectID: PermissionTable.project_id,
+            directory: PermissionTable.directory,
+            resource: PermissionTable.resource,
+          })
           .from(PermissionTable)
           .where(eq(PermissionTable.action, "bash"))
-          .all(),
+          .all()
+          .pipe(Effect.map((rows) => rows.toSorted((a, b) => a.id.localeCompare(b.id)))),
       ).toEqual(
         [
-          { id: permissionID, projectID: remoteID, directory: "/project/a" },
-          { id: targetPermissionID, projectID: remoteID, directory: "/project/b" },
+          { id: permissionID, projectID: original.project.id, directory: "/project/a", resource: "*" },
+          { id: currentPermissionID, projectID: remoteID, directory: tmp, resource: "current" },
+          { id: targetPermissionID, projectID: remoteID, directory: "/project/b", resource: "*" },
+          {
+            id: PermissionSaved.ID.make("per_directory_migration_collision_target"),
+            projectID: remoteID,
+            directory: tmp,
+            resource: "collision",
+          },
         ].toSorted((a, b) => a.id.localeCompare(b.id)),
       )
     }),

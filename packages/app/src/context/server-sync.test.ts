@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { OpencodeClient } from "@opencode-ai/sdk/v2/client"
+import type { OpencodeClient, ProjectDirectories } from "@opencode-ai/sdk/v2/client"
 import type {
   McpListInput,
   McpResourceCatalogInput,
@@ -10,12 +10,124 @@ import type {
 import { QueryClient } from "@tanstack/solid-query"
 import { canDisposeDirectory, pickDirectoriesToEvict } from "./global-sync/eviction"
 import { estimateRootSessionTotal, loadRootSessions } from "./global-sync/session-load"
-import { loadActiveSessionsQuery, loadMcpQuery, loadMcpResourcesQuery, seedActiveSessionStatuses } from "./server-sync"
+import {
+  createProjectDirectoryCoordinator,
+  loadActiveSessionsQuery,
+  loadMcpQuery,
+  loadMcpResourcesQuery,
+  seedActiveSessionStatuses,
+} from "./server-sync"
 import { ServerScope } from "@/utils/server-scope"
 import { createServerSession } from "./server-session"
 import type { ServerApi } from "@/utils/server"
 
 type McpApi = ServerApi["mcp"]
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((next) => {
+    resolve = next
+  })
+  return { promise, resolve }
+}
+
+const directories = (directory: string): ProjectDirectories => [{ directory, kind: "user" }]
+
+describe("project directory coordinator", () => {
+  test("keeps the latest deferred directory refresh", async () => {
+    const coordinator = createProjectDirectoryCoordinator()
+    const first = deferred<ProjectDirectories>()
+    const second = deferred<ProjectDirectories>()
+    const applied: ProjectDirectories[] = []
+
+    const older = coordinator.refresh(
+      "project",
+      () => first.promise,
+      (_, value) => applied.push(value),
+    )
+    const newer = coordinator.refresh(
+      "project",
+      () => second.promise,
+      (_, value) => applied.push(value),
+    )
+    second.resolve(directories("/newer"))
+    await newer
+    first.resolve(directories("/older"))
+    await older
+
+    expect(applied).toEqual([directories("/newer")])
+  })
+
+  test("does not let a delayed registration overwrite a newer refresh", async () => {
+    const coordinator = createProjectDirectoryCoordinator()
+    const mutation = deferred<ProjectDirectories>()
+    const refreshed = deferred<ProjectDirectories>()
+    const applied: ProjectDirectories[] = []
+
+    const registration = coordinator.register(
+      "/checkout",
+      async () => ({ id: "project" }),
+      () => mutation.promise,
+      (_, value) => applied.push(value),
+    )
+    await Promise.resolve()
+    const refresh = coordinator.refresh(
+      "project",
+      () => refreshed.promise,
+      (_, value) => applied.push(value),
+    )
+    refreshed.resolve(directories("/fresh"))
+    await refresh
+    mutation.resolve(directories("/stale"))
+    await registration
+
+    expect(applied).toEqual([directories("/fresh")])
+  })
+
+  test("shares an in-flight registration between owners", async () => {
+    const coordinator = createProjectDirectoryCoordinator()
+    const mutation = deferred<ProjectDirectories>()
+    let requests = 0
+    const register = () =>
+      coordinator.register(
+        "/checkout",
+        async () => ({ id: "project" }),
+        () => {
+          requests += 1
+          return mutation.promise
+        },
+        () => {},
+      )
+
+    const first = register()
+    const second = register()
+    expect(second).toBe(first)
+    mutation.resolve(directories("/checkout"))
+    await first
+
+    expect(requests).toBe(1)
+  })
+
+  test("retries a failed registration after its pending request settles", async () => {
+    const coordinator = createProjectDirectoryCoordinator()
+    let requests = 0
+    const register = () =>
+      coordinator.register(
+        "/checkout",
+        async () => ({ id: "project" }),
+        async () => {
+          requests += 1
+          if (requests === 1) throw new Error("offline")
+          return directories("/checkout")
+        },
+        () => {},
+      )
+
+    await expect(register()).rejects.toThrow("offline")
+    await expect(register()).resolves.toEqual(directories("/checkout"))
+    expect(requests).toBe(2)
+  })
+})
 
 describe("MCP queries", () => {
   test("loads current servers for the requested location", async () => {

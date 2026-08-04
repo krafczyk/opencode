@@ -132,11 +132,14 @@ function createServerCtx(
     const entries = projects.list()
     const enriched = entries.map(enrich)
     const records = sync.data.project.flatMap((project) =>
-      sync.project.directories(project.id).map((record) => ({ ...record, projectID: project.id, fallbackDirectory: project.worktree })),
+      sync.project
+        .directories(project.id)
+        .map((record) => ({ ...record, projectID: project.id, fallbackDirectory: project.worktree })),
     )
     const presentation = presentProjectDirectories(
       entries.map((project) => project.worktree),
       records,
+      projects.pendingRegistration(),
     )
     return presentation.roots.map((directory) => {
       const existing = enriched.find((project) => pathKey(project.worktree) === pathKey(directory))
@@ -157,10 +160,7 @@ function createServerCtx(
       .slice(0, RECENTLY_CLOSED_DISPLAY_LIMIT)
       .map((worktree) => enrich({ worktree, expanded: false }))
   })
-  const replayedRegistrations = new Set<string>()
-  const register = async (directory: string) => {
-    projects.registerIntent(directory)
-    replayedRegistrations.add(pathKey(directory))
+  const syncRegistration = (directory: string) => {
     return sync.project
       .registerDirectory(directory)
       .then((records) => {
@@ -170,20 +170,24 @@ function createServerCtx(
       })
       .catch(() => undefined)
   }
+  const register = (directory: string) => {
+    projects.registerIntent(directory)
+    return syncRegistration(directory)
+  }
 
   createEffect(() => {
     if (!sync.ready) return
     for (const directory of projects.pendingRegistration()) {
-      const key = pathKey(directory)
       const confirmed = sync.data.project.some((project) =>
-        sync.project.directories(project.id).some((record) => pathKey(record.directory) === key && record.kind === "user"),
+        sync.project
+          .directories(project.id)
+          .some((record) => pathKey(record.directory) === pathKey(directory) && record.kind === "user"),
       )
       if (confirmed) {
         projects.confirmRegistration(directory)
         continue
       }
-      if (replayedRegistrations.has(key)) continue
-      void register(directory)
+      void syncRegistration(directory)
     }
   })
 

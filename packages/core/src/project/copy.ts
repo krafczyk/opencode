@@ -131,7 +131,6 @@ const layer = Layer.effect(
     const fs = yield* FSUtil.Service
     const git = yield* Git.Service
     const directories = yield* ProjectDirectories.Service
-    const db = (yield* Database.Service).db
     const events = yield* EventV2.Service
 
     const changed = Effect.fnUntraced(function* (projectID: Project.ID, update: boolean) {
@@ -200,10 +199,12 @@ const layer = Layer.effect(
 
     const remove = Effect.fn("ProjectCopy.remove")(function* (input: RemoveInput) {
       const copyDirectory = yield* canonical(input.directory)
-      const removed = yield* directories.removeManaged({ projectID: input.projectID, directory: copyDirectory }, (stored) =>
-        Effect.flatMap(getStrategy(StrategyID.make(stored.strategy!)), (strategy) =>
-          strategy.remove({ directory: copyDirectory, force: input.force }),
-        ),
+      const removed = yield* directories.removeManaged(
+        { projectID: input.projectID, directory: copyDirectory },
+        (stored) =>
+          Effect.flatMap(getStrategy(StrategyID.make(stored.strategy!)), (strategy) =>
+            strategy.remove({ directory: copyDirectory, force: input.force }),
+          ),
       )
       if (!removed) return yield* new InvalidDirectoryError({ directory: copyDirectory })
       yield* changed(input.projectID, true)
@@ -237,25 +238,20 @@ const layer = Layer.effect(
         Effect.map((sets) => new Map(sets.flat(2).map((item) => [item.directory, item] as const)).values().toArray()),
       )
       const removed = checked.filter((item) => !item.exists).map((item) => item.directory)
-      const result = yield* db
-        .transaction((tx) =>
-          Effect.all({
-            updated: Effect.forEach(discovered, (item) =>
-              directories.discover(
-                {
-                  projectID: input.projectID,
-                  directory: item.directory,
-                  strategy: item.strategy,
-                },
-                tx,
-              ),
-            ),
-            removed: Effect.forEach(removed, (directory) =>
-              directories.remove({ projectID: input.projectID, directory }, tx),
-            ),
+      const result = yield* Effect.all({
+        updated: Effect.forEach(discovered, (item) =>
+          directories.discover({
+            projectID: input.projectID,
+            directory: item.directory,
+            strategy: item.strategy,
           }),
-        )
-        .pipe(Effect.orDie)
+        ),
+        removed: Effect.forEach(removed, (directory) =>
+          directories.removeIf({ projectID: input.projectID, directory }, (current) =>
+            fs.isDir(current.directory).pipe(Effect.map((exists) => !exists)),
+          ),
+        ),
+      })
       const changes = {
         updated: discovered.filter((_, index) => result.updated[index]).map((item) => item.directory),
         removed: removed.filter((_, index) => result.removed[index]),
