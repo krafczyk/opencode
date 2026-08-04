@@ -5,6 +5,7 @@ import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/s
 import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
+import { PermissionTable } from "@opencode-ai/core/permission/sql"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { GlobalBus } from "@/bus/global"
 import { which } from "@opencode-ai/core/util/which"
@@ -168,11 +169,58 @@ const layer = Layer.effect(
                   .run()
               }
 
-              // Project directories may be shared across distinct
-              // checkouts which have diverged. Clear the directory
-              // list and rely on it being re-populated to ensure
-              // accuracy
-              yield* d.delete(ProjectDirectoryTable).where(eq(ProjectDirectoryTable.project_id, oldID)).run()
+              const directories = yield* d
+                .select()
+                .from(ProjectDirectoryTable)
+                .where(eq(ProjectDirectoryTable.project_id, oldID))
+                .all()
+              yield* Effect.forEach(directories, (directory) =>
+                Effect.gen(function* () {
+                  const existing = yield* d
+                    .select()
+                    .from(ProjectDirectoryTable)
+                    .where(
+                      and(
+                        eq(ProjectDirectoryTable.project_id, newID),
+                        eq(ProjectDirectoryTable.directory, directory.directory),
+                      ),
+                    )
+                    .get()
+                  if (!existing) {
+                    yield* d
+                      .update(ProjectDirectoryTable)
+                      .set({ project_id: newID })
+                      .where(
+                        and(
+                          eq(ProjectDirectoryTable.project_id, oldID),
+                          eq(ProjectDirectoryTable.directory, directory.directory),
+                        ),
+                      )
+                      .run()
+                    return
+                  }
+                  if (directory.kind === "user" && existing.kind !== "user")
+                    yield* d
+                      .update(ProjectDirectoryTable)
+                      .set({ kind: "user", strategy: null, source_directory: null })
+                      .where(
+                        and(
+                          eq(ProjectDirectoryTable.project_id, newID),
+                          eq(ProjectDirectoryTable.directory, directory.directory),
+                        ),
+                      )
+                      .run()
+                  yield* d
+                    .delete(ProjectDirectoryTable)
+                    .where(
+                      and(
+                        eq(ProjectDirectoryTable.project_id, oldID),
+                        eq(ProjectDirectoryTable.directory, directory.directory),
+                      ),
+                    )
+                    .run()
+                }),
+              )
 
               yield* d
                 .update(SessionTable)
@@ -184,6 +232,35 @@ const layer = Layer.effect(
                 .set({ project_id: newID })
                 .where(eq(WorkspaceTable.project_id, oldID))
                 .run()
+              const permissions = yield* d
+                .select()
+                .from(PermissionTable)
+                .where(eq(PermissionTable.project_id, oldID))
+                .all()
+              yield* Effect.forEach(permissions, (permission) =>
+                Effect.gen(function* () {
+                  const existing = yield* d
+                    .select({ id: PermissionTable.id })
+                    .from(PermissionTable)
+                    .where(
+                      and(
+                        eq(PermissionTable.project_id, newID),
+                        eq(PermissionTable.action, permission.action),
+                        eq(PermissionTable.resource, permission.resource),
+                      ),
+                    )
+                    .get()
+                  if (existing) {
+                    yield* d.delete(PermissionTable).where(eq(PermissionTable.id, permission.id)).run()
+                    return
+                  }
+                  yield* d
+                    .update(PermissionTable)
+                    .set({ project_id: newID, time_updated: sql`${PermissionTable.time_updated}` })
+                    .where(eq(PermissionTable.id, permission.id))
+                    .run()
+                }),
+              )
 
               if (oldProject) yield* d.delete(ProjectTable).where(eq(ProjectTable.id, oldID)).run()
             }),

@@ -102,7 +102,9 @@ export default {
           \`project_id\` text NOT NULL,
           \`directory\` text NOT NULL,
           \`type\` text,
+          \`kind\` text DEFAULT 'user' NOT NULL,
           \`strategy\` text,
+          \`source_directory\` text,
           \`time_created\` integer NOT NULL,
           CONSTRAINT \`project_directory_pk\` PRIMARY KEY(\`project_id\`, \`directory\`),
           CONSTRAINT \`fk_project_directory_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE

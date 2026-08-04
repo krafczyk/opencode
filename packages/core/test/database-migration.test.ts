@@ -15,6 +15,7 @@ import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migrat
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
+import directoryClassificationMigration from "@opencode-ai/core/database/migration/20260804040958_directory_classification"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -38,6 +39,31 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
 const makeDb = EffectDrizzleSqlite.makeWithDefaults()
 
 describe("DatabaseMigration", () => {
+  test("classifies legacy strategy rows without inventing a managed source", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(
+          sql`CREATE TABLE project_directory (project_id text NOT NULL, directory text NOT NULL, strategy text, time_created integer NOT NULL, PRIMARY KEY (project_id, directory))`,
+        )
+        yield* db.run(
+          sql`INSERT INTO project_directory (project_id, directory, strategy, time_created) VALUES ('project', '/ordinary', NULL, 1), ('project', '/managed', 'git_worktree', 2)`,
+        )
+
+        yield* DatabaseMigration.applyOnly(db, [directoryClassificationMigration])
+
+        expect(
+          yield* db.all(
+            sql`SELECT directory, kind, strategy, source_directory FROM project_directory ORDER BY directory`,
+          ),
+        ).toEqual([
+          { directory: "/managed", kind: "managed", strategy: "git_worktree", source_directory: null },
+          { directory: "/ordinary", kind: "user", strategy: null, source_directory: null },
+        ])
+      }),
+    )
+  })
+
   test("serializes concurrent embedded initialization for one database path", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "embedded.sqlite")

@@ -17,6 +17,7 @@ export const ProjectTable = sqliteTable("project", {
   commands: text({ mode: "json" }).$type<{ start?: string }>(),
 })
 
+/** Stores each project directory's user or managed classification and managed-copy provenance. */
 export const ProjectDirectoryTable = sqliteTable(
   "project_directory",
   {
@@ -26,7 +27,9 @@ export const ProjectDirectoryTable = sqliteTable(
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
     directory: DatabasePath.absoluteColumn().notNull(),
     type: text().$type<"main" | "root" | "git_worktree">(),
+    kind: text().$type<"user" | "managed">().notNull().default("user"),
     strategy: text(),
+    source_directory: DatabasePath.absoluteColumn(),
     time_created: integer()
       .notNull()
       .$default(() => Date.now()),

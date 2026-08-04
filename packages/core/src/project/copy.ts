@@ -188,11 +188,11 @@ const layer = Layer.effect(
       })
       yield* changed(
         input.projectID,
-        yield* directories.create({
+        yield* directories.createManaged({
           projectID: input.projectID,
           directory: result.directory,
           strategy: input.strategy,
-          behavior: "replace",
+          sourceDirectory,
         }),
       )
       return result
@@ -200,16 +200,13 @@ const layer = Layer.effect(
 
     const remove = Effect.fn("ProjectCopy.remove")(function* (input: RemoveInput) {
       const copyDirectory = yield* canonical(input.directory)
-      const stored = yield* directories.get({ projectID: input.projectID, directory: copyDirectory })
-      if (!stored?.strategy) return yield* new InvalidDirectoryError({ directory: copyDirectory })
-      yield* (yield* getStrategy(StrategyID.make(stored.strategy))).remove({
-        directory: copyDirectory,
-        force: input.force,
-      })
-      yield* changed(
-        input.projectID,
-        yield* directories.remove({ projectID: input.projectID, directory: copyDirectory }),
+      const removed = yield* directories.removeManaged({ projectID: input.projectID, directory: copyDirectory }, (stored) =>
+        Effect.flatMap(getStrategy(StrategyID.make(stored.strategy!)), (strategy) =>
+          strategy.remove({ directory: copyDirectory, force: input.force }),
+        ),
       )
+      if (!removed) return yield* new InvalidDirectoryError({ directory: copyDirectory })
+      yield* changed(input.projectID, true)
     })
 
     const refresh = Effect.fn("ProjectCopy.refresh")(function* (input: RefreshInput) {
@@ -220,7 +217,7 @@ const layer = Layer.effect(
         { concurrency: "unbounded" },
       )
       const sourceDirectories = checked
-        .filter((item) => item.strategy === undefined && item.exists)
+        .filter((item) => item.kind === "user" && item.exists)
         .map((item) => item.directory)
       const discovered = yield* Effect.forEach(
         sourceDirectories,
@@ -229,10 +226,9 @@ const layer = Layer.effect(
             strategy.list(sourceDirectory).pipe(
               Effect.catchTag("ProjectCopy.DirectoryUnavailableError", () => Effect.succeed([])),
               Effect.map((items) =>
-                items.map((item) => ({
-                  directory: item.directory,
-                  strategy: item.type === "copy" ? strategy.id : undefined,
-                })),
+                items
+                  .filter((item) => item.type === "copy")
+                  .map((item) => ({ directory: item.directory, strategy: strategy.id })),
               ),
             ),
           ),
@@ -245,12 +241,11 @@ const layer = Layer.effect(
         .transaction((tx) =>
           Effect.all({
             updated: Effect.forEach(discovered, (item) =>
-              directories.create(
+              directories.discover(
                 {
                   projectID: input.projectID,
                   directory: item.directory,
                   strategy: item.strategy,
-                  behavior: "replace",
                 },
                 tx,
               ),

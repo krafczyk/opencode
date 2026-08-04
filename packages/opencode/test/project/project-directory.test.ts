@@ -9,7 +9,13 @@ import { Hash } from "@opencode-ai/core/util/hash"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
+import { PermissionTable } from "@opencode-ai/core/permission/sql"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
 import { ProjectV2 } from "@opencode-ai/core/project"
+import { PermissionSaved } from "@opencode-ai/core/permission/saved"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { Project } from "@/project/project"
 import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -27,7 +33,12 @@ function directories(projectID: ProjectV2.ID) {
         Effect.orDie,
         Effect.map((rows) =>
           rows
-            .map((row) => ({ directory: row.directory, strategy: row.strategy ?? undefined }))
+            .map((row) => ({
+              directory: row.directory,
+              kind: row.kind,
+              strategy: row.strategy ?? undefined,
+              sourceDirectory: row.source_directory ?? undefined,
+            }))
             .toSorted((a, b) => a.directory.localeCompare(b.directory)),
         ),
       ),
@@ -43,7 +54,7 @@ describe("Project directory persistence", () => {
       const result = yield* project.fromDirectory(tmp)
 
       expect(yield* directories(result.project.id)).toEqual([
-        { directory: AbsolutePath.make(tmp), strategy: undefined },
+        { directory: AbsolutePath.make(tmp), kind: "user", strategy: undefined, sourceDirectory: undefined },
       ])
     }),
   )
@@ -58,7 +69,7 @@ describe("Project directory persistence", () => {
 
       expect(next.project.id).toBe(result.project.id)
       expect(yield* directories(result.project.id)).toEqual([
-        { directory: AbsolutePath.make(tmp), strategy: undefined },
+        { directory: AbsolutePath.make(tmp), kind: "user", strategy: undefined, sourceDirectory: undefined },
       ])
     }),
   )
@@ -78,8 +89,13 @@ describe("Project directory persistence", () => {
 
       expect(yield* directories(main.project.id)).toEqual(
         [
-          { directory: AbsolutePath.make(tmp), strategy: undefined },
-          { directory: AbsolutePath.make(worktree), strategy: undefined },
+          { directory: AbsolutePath.make(tmp), kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
+          {
+            directory: AbsolutePath.make(worktree),
+            kind: "user" as const,
+            strategy: undefined,
+            sourceDirectory: undefined,
+          },
         ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
       )
     }),
@@ -98,7 +114,7 @@ describe("Project directory persistence", () => {
       const result = yield* project.fromDirectory(worktree)
 
       expect(yield* directories(result.project.id)).toEqual([
-        { directory: AbsolutePath.make(worktree), strategy: undefined },
+        { directory: AbsolutePath.make(worktree), kind: "user", strategy: undefined, sourceDirectory: undefined },
       ])
     }),
   )
@@ -120,8 +136,8 @@ describe("Project directory persistence", () => {
 
       expect(yield* directories(main.project.id)).toEqual(
         [
-          { directory: AbsolutePath.make(tmp), strategy: undefined },
-          { directory: AbsolutePath.make(clone), strategy: undefined },
+          { directory: AbsolutePath.make(tmp), kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
+          { directory: AbsolutePath.make(clone), kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
         ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
       )
     }),
@@ -142,7 +158,7 @@ describe("Project directory persistence", () => {
       const result = yield* project.fromDirectory(worktree)
 
       expect(yield* directories(result.project.id)).toEqual([
-        { directory: AbsolutePath.make(worktree), strategy: undefined },
+        { directory: AbsolutePath.make(worktree), kind: "user", strategy: undefined, sourceDirectory: undefined },
       ])
     }),
   )
@@ -172,31 +188,118 @@ describe("Project directory persistence", () => {
 
       yield* project.fromDirectory(tmp)
 
-      expect(yield* directories(remoteID)).toEqual([{ directory: AbsolutePath.make(tmp), strategy: undefined }])
+      expect(yield* directories(remoteID)).toEqual([
+        { directory: AbsolutePath.make(tmp), kind: "user", strategy: undefined, sourceDirectory: undefined },
+      ])
     }),
   )
 
-  it.live("clears stale directories when the project id changes", () =>
+  it.live("re-keys directories, sessions, workspaces, and permissions when the project id changes", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({ git: true })
       const project = yield* Project.Service
       const original = yield* project.fromDirectory(tmp)
-      const stale = AbsolutePath.make(tmp + "-stale-checkout")
+      const userDirectory = AbsolutePath.make(tmp + "-user-checkout")
+      const managedDirectory = AbsolutePath.make(tmp + "-managed-copy")
+      const collision = AbsolutePath.make(tmp + "-classification-collision")
       const { db } = yield* Database.Service
       yield* db
         .insert(ProjectDirectoryTable)
-        .values({ project_id: original.project.id, directory: stale })
+        .values([
+          { project_id: original.project.id, directory: userDirectory, kind: "user" },
+          {
+            project_id: original.project.id,
+            directory: managedDirectory,
+            kind: "managed",
+            strategy: "git_worktree",
+            source_directory: AbsolutePath.make(tmp),
+          },
+          { project_id: original.project.id, directory: collision, kind: "user" },
+        ])
         .run()
         .pipe(Effect.orDie)
       const remoteID = ProjectV2.ID.make(Hash.fast("git-remote:github.com/project-directory-test/migration"))
+      const sessionID = SessionSchema.ID.make("ses_directory_migration")
+      const workspaceID = WorkspaceV2.ID.make("wrk_directory_migration")
+      const permissionID = PermissionSaved.ID.make("per_directory_migration")
       yield* Effect.promise(() =>
         $`git remote add origin git@github.com:project-directory-test/migration.git`.cwd(tmp).quiet(),
       )
 
+      yield* db
+        .insert(ProjectTable)
+        .values({
+          id: remoteID,
+          worktree: AbsolutePath.make(tmp + "-remote"),
+          vcs: "git",
+          time_created: 1,
+          time_updated: 1,
+          sandboxes: [],
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(ProjectDirectoryTable)
+        .values({ project_id: remoteID, directory: collision, kind: "managed", strategy: "git_worktree" })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: original.project.id,
+          slug: "directory-migration",
+          directory: tmp,
+          title: "Directory migration",
+          version: "test",
+          time_created: 1,
+          time_updated: 1,
+        })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(WorkspaceTable)
+        .values({ id: workspaceID, project_id: original.project.id, type: "local", time_used: 1 })
+        .run()
+        .pipe(Effect.orDie)
+      yield* db
+        .insert(PermissionTable)
+        .values({
+          id: permissionID,
+          project_id: original.project.id,
+          action: "bash",
+          resource: "*",
+          time_created: 1,
+          time_updated: 1,
+        })
+        .run()
+        .pipe(Effect.orDie)
+
       yield* project.fromDirectory(tmp)
 
       expect(yield* directories(original.project.id)).toEqual([])
-      expect(yield* directories(remoteID)).toEqual([{ directory: AbsolutePath.make(tmp), strategy: undefined }])
+      expect(yield* directories(remoteID)).toEqual(
+        [
+          { directory: AbsolutePath.make(tmp), kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
+          { directory: userDirectory, kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
+          {
+            directory: managedDirectory,
+            kind: "managed" as const,
+            strategy: "git_worktree",
+            sourceDirectory: AbsolutePath.make(tmp),
+          },
+          { directory: collision, kind: "user" as const, strategy: undefined, sourceDirectory: undefined },
+        ].toSorted((a, b) => a.directory.localeCompare(b.directory)),
+      )
+      expect(
+        yield* db.select({ projectID: SessionTable.project_id }).from(SessionTable).where(eq(SessionTable.id, sessionID)).get(),
+      ).toEqual({ projectID: remoteID })
+      expect(
+        yield* db.select({ projectID: WorkspaceTable.project_id }).from(WorkspaceTable).where(eq(WorkspaceTable.id, workspaceID)).get(),
+      ).toEqual({ projectID: remoteID })
+      expect(
+        yield* db.select({ projectID: PermissionTable.project_id }).from(PermissionTable).where(eq(PermissionTable.id, permissionID)).get(),
+      ).toEqual({ projectID: remoteID })
     }),
   )
 })
