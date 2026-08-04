@@ -177,6 +177,22 @@ export function seedActiveSessionStatuses(
   }
 }
 
+function sameProjectDirectories(a: ProjectDirectories, b: ProjectDirectories) {
+  return (
+    a.length === b.length &&
+    a.every((entry, index) => {
+      const other = b[index]
+      if (!other) return false
+      return (
+        entry.directory === other.directory &&
+        entry.kind === other.kind &&
+        entry.strategy === other.strategy &&
+        entry.sourceDirectory === other.sourceDirectory
+      )
+    })
+  )
+}
+
 function makeQueryOptionsApi(
   scope: ServerScope,
   serverSDK: () => OpencodeClient,
@@ -301,17 +317,12 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   let bootingRoot = false
   let eventFrame: number | undefined
   let eventTimer: ReturnType<typeof setTimeout> | undefined
-  let projectRefreshVersion = 0
   const projectDirectoryRefreshVersion = new Map<string, number>()
 
   onCleanup(() => {
     if (eventFrame !== undefined) cancelAnimationFrame(eventFrame)
     if (eventTimer !== undefined) clearTimeout(eventTimer)
   })
-
-  const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
-    setGlobalStore("project", next)
-  }
 
   const loadProjectDirectories = async (projectID: string, directory: string) => {
     if ((await serverSDK.protocol) === "v1") return projectDirectories[projectID] ?? []
@@ -320,20 +331,26 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     const result = await serverSDK.client.project.directories({ projectID, directory })
     const directories = result.data ?? []
     if (projectDirectoryRefreshVersion.get(projectID) !== version) return directories
+    if (sameProjectDirectories(projectDirectories[projectID] ?? [], directories)) return directories
     setProjectDirectories(projectID, directories)
     return directories
   }
 
-  const refreshProjects = async () => {
-    const version = ++projectRefreshVersion
-    const projects = await queryClient.fetchQuery(loadProjectsQuery(serverSDK.scope, serverSDK.api.project))
-    if (version !== projectRefreshVersion) return
-    setProjects(projects)
+  const hydrateProjectDirectories = (projects: Project[]) =>
     void Promise.all(
-      [...new Map(projects.map((project) => [project.id, project])).values()].map((project) =>
+      projects.map((project) =>
         loadProjectDirectories(project.id, project.worktree).catch(() => undefined),
       ),
     )
+
+  const setProjects = (next: Project[] | ((draft: Project[]) => Project[])) => {
+    setGlobalStore("project", next)
+    hydrateProjectDirectories(globalStore.project)
+  }
+
+  const refreshProjectDirectories = (projectID: string) => {
+    const project = globalStore.project.find((item) => item.id === projectID)
+    if (project) void loadProjectDirectories(project.id, project.worktree).catch(() => undefined)
   }
 
   const setBootStore = ((...input: unknown[]) => {
@@ -582,15 +599,9 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         },
         setGlobalProject: setProjects,
       })
-      if (
-        eventType === "config.updated" ||
-        eventType === "catalog.updated" ||
-        eventType === "agent.updated" ||
-        eventType === "project.directories.updated"
-      ) {
-        if (eventType === "project.directories.updated") void refreshProjects()
-        if (eventType !== "project.directories.updated") bootstrap.refetch()
-      }
+      if (event.type === "project.directories.updated") refreshProjectDirectories(event.properties.projectID)
+      if (eventType === "config.updated" || eventType === "catalog.updated" || eventType === "agent.updated")
+        bootstrap.refetch()
       if (eventType === "server.connected" || eventType === "global.disposed") {
         if (recent) return
         for (const directory of Object.keys(children.children)) {
@@ -611,7 +622,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         .then(indexSession)
         .catch(() => {})
 
-    if (eventType === "project.directories.updated") void refreshProjects()
+    if (event.type === "project.directories.updated") refreshProjectDirectories(event.properties.projectID)
 
     const existing = children.children[key]
     if (!existing) return
@@ -683,7 +694,6 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     directories(projectID: string) {
       return projectDirectories[projectID] ?? []
     },
-    refreshDirectories: loadProjectDirectories,
     async registerDirectory(directory: string) {
       if ((await serverSDK.protocol) !== "v1") {
         const result = await serverSDK.client.project.registerCurrentDirectory({ directory })

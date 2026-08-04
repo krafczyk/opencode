@@ -187,15 +187,7 @@ export function createHomeSessionsController(home: HomeController) {
       canCreate: () => !!home.project.newSession(),
       create: home.project.openNewSession,
       open: (session: Session, options?: OpenSessionOptions) => {
-        const directoryKey = pathKey(session.directory)
-        const project =
-          home.project
-            .list()
-            .find(
-              (item) =>
-                pathKey(item.worktree) === directoryKey ||
-                item.managedDirectories?.some((managed) => pathKey(managed.directory) === directoryKey),
-            ) ?? projectForSession(session, home.project.list(), projectByID())
+        const project = projectForSession(session, home.project.list(), projectByID())
         const conn = home.server.focused()
         if (!conn) return
         const directory = project?.worktree ?? session.directory

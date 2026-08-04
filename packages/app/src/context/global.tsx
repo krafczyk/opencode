@@ -128,11 +128,6 @@ function createServerCtx(
     return base
   }
 
-  createEffect(() => {
-    for (const project of sync.data.project) {
-      void sync.project.refreshDirectories(project.id, project.worktree).catch(() => undefined)
-    }
-  })
   const projectsList = createMemo(() => {
     const entries = projects.list()
     const enriched = entries.map(enrich)
@@ -140,7 +135,7 @@ function createServerCtx(
       sync.project.directories(project.id).map((record) => ({ ...record, projectID: project.id, fallbackDirectory: project.worktree })),
     )
     const presentation = presentProjectDirectories(
-      entries.map((project) => ({ directory: project.worktree, expanded: project.expanded })),
+      entries.map((project) => project.worktree),
       records,
     )
     return presentation.roots.map((directory) => {

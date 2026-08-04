@@ -2,6 +2,7 @@ import { pathKey } from "@/utils/path-key"
 import type { Session } from "@opencode-ai/sdk/v2/client"
 import type { LocalProject } from "@/context/layout"
 import { displayName, projectForSession } from "@/pages/layout/helpers"
+import { sessionUpdatedAt } from "@/context/global-sync/session-trim"
 
 /** Builds a directory-qualified key so identical session IDs in separate locations stay distinct. */
 export function sessionSearchKey(session: { directory: string; id: string }) {
@@ -24,18 +25,11 @@ export function buildHomeSessionRecords(input: {
 }) {
   const directories = new Set(input.projectDirectories().map(pathKey))
   const sessions = input.sessions().filter((session) => directories.has(pathKey(session.directory)))
+  const projects = input.projects()
   return [...new Map(sessions.map((session) => [session.id, session] as const)).values()]
-    .sort((a, b) => (b.time.updated ?? b.time.created) - (a.time.updated ?? a.time.created))
+    .sort((a, b) => sessionUpdatedAt(b) - sessionUpdatedAt(a))
     .flatMap((session) => {
-      const directory = pathKey(session.directory)
-      const project =
-        input
-          .projects()
-          .find(
-            (item) =>
-              pathKey(item.worktree) === directory ||
-              item.managedDirectories?.some((managed) => pathKey(managed.directory) === directory),
-          ) ?? projectForSession(session, input.projects(), input.projectByID())
+      const project = projectForSession(session, projects, input.projectByID())
       if (!project) return []
       return { session, project, projectName: displayName(project) }
     })

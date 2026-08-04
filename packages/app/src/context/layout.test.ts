@@ -72,10 +72,7 @@ describe("pruneSessionKeys", () => {
 describe("project directory presentation", () => {
   test("keeps user-added same-project directories as independently ordered roots", () => {
     const presentation = presentProjectDirectories(
-      [
-        { directory: "/checkout/b", expanded: true },
-        { directory: "/checkout/a", expanded: false },
-      ],
+      ["/checkout/b", "/checkout/a"],
       [
         { projectID: "repo", directory: "/checkout/a", kind: "user", fallbackDirectory: "/checkout/a" },
         { projectID: "repo", directory: "/checkout/b", kind: "user", fallbackDirectory: "/checkout/a" },
@@ -89,10 +86,7 @@ describe("project directory presentation", () => {
 
   test("keeps unresolved and failed persisted paths selectable without managed actions", () => {
     const presentation = presentProjectDirectories(
-      [
-        { directory: "/checkout/pending", expanded: true },
-        { directory: "/checkout/failed", expanded: true },
-      ],
+      ["/checkout/pending", "/checkout/failed"],
       [],
     )
 
@@ -103,12 +97,7 @@ describe("project directory presentation", () => {
 
   test("groups managed copies by exact persisted source without collapsing another user checkout", () => {
     const presentation = presentProjectDirectories(
-      [
-        { directory: "/checkout/a", expanded: true },
-        { directory: "/checkout/b", expanded: true },
-        { directory: "/work/a-copy", expanded: true },
-        { directory: "/work/b-copy", expanded: true },
-      ],
+      ["/checkout/a", "/checkout/b", "/work/a-copy", "/work/b-copy"],
       [
         { projectID: "repo", directory: "/checkout/a", kind: "user", fallbackDirectory: "/checkout/a" },
         { projectID: "repo", directory: "/checkout/b", kind: "user", fallbackDirectory: "/checkout/a" },
@@ -139,10 +128,7 @@ describe("project directory presentation", () => {
 
   test("uses only the compatibility root for legacy managed rows", () => {
     const presentation = presentProjectDirectories(
-      [
-        { directory: "/checkout/b", expanded: true },
-        { directory: "/work/legacy", expanded: true },
-      ],
+      ["/checkout/b", "/work/legacy"],
       [
         { projectID: "repo", directory: "/checkout/b", kind: "user", fallbackDirectory: "/checkout/a" },
         {

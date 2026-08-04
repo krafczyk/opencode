@@ -102,6 +102,17 @@ const layer = Layer.effect(
     const locks = KeyedMutex.makeUnsafe<string>()
     const key = (input: { projectID: ProjectSchema.ID; directory: AbsolutePath }) =>
       `${input.projectID}\u0000${input.directory}`
+    const toDirectory = (row: {
+      directory: Directory["directory"]
+      kind: Directory["kind"]
+      strategy: string | null
+      sourceDirectory: Directory["directory"] | null
+    }): Directory => ({
+      directory: row.directory,
+      kind: row.kind,
+      strategy: row.strategy ?? undefined,
+      sourceDirectory: row.sourceDirectory ?? undefined,
+    })
 
     const create = Effect.fn("ProjectDirectories.create")(function* (input: CreateInput, tx?: Transaction) {
       return yield* locks.withLock(key(input))(
@@ -202,12 +213,7 @@ const layer = Layer.effect(
         .orderBy(desc(ProjectDirectoryTable.time_created), asc(ProjectDirectoryTable.directory))
         .all()
         .pipe(Effect.orDie)
-      return rows.map((row) => ({
-        directory: row.directory,
-        kind: row.kind,
-        strategy: row.strategy ?? undefined,
-        sourceDirectory: row.sourceDirectory ?? undefined,
-      }))
+      return rows.map(toDirectory)
     })
 
     const contains = Effect.fn("ProjectDirectories.contains")(function* (input: {
@@ -249,14 +255,7 @@ const layer = Layer.effect(
         )
         .get()
         .pipe(Effect.orDie)
-      return row
-        ? {
-            directory: row.directory,
-            kind: row.kind,
-            strategy: row.strategy ?? undefined,
-            sourceDirectory: row.sourceDirectory ?? undefined,
-          }
-        : undefined
+      return row ? toDirectory(row) : undefined
     })
 
     const removeManaged = <E, R>(

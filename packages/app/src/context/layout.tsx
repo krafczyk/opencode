@@ -464,12 +464,6 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       return base
     }
 
-    createEffect(() => {
-      for (const project of serverSync().data.project) {
-        void serverSync().project.refreshDirectories(project.id, project.worktree).catch(() => undefined)
-      }
-    })
-
     const enriched = createMemo(() => {
       const entries = server.projects.list()
       const projects = entries.map(enrich)
@@ -479,7 +473,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
           .map((record) => ({ ...record, projectID: project.id, fallbackDirectory: project.worktree })),
       )
       const presentation = presentProjectDirectories(
-        entries.map((project) => ({ directory: project.worktree, expanded: project.expanded })),
+        entries.map((project) => project.worktree),
         records,
       )
       return presentation.roots.map((directory) => {

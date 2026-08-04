@@ -1,19 +1,14 @@
 import { pathKey } from "@/utils/path-key"
+import type { ProjectDirectories } from "@opencode-ai/sdk/v2/client"
 
 /** Directory classification and grouping metadata used by app project navigation. */
-export type ProjectDirectoryRecord = {
+export type ProjectDirectoryRecord = ProjectDirectories[number] & {
   projectID?: string
-  directory: string
-  kind: "user" | "managed"
-  strategy?: string
-  sourceDirectory?: string
   fallbackDirectory?: string
 }
 
-type StoredProject = { directory: string; expanded: boolean }
-
 /** Derives independently selectable roots and managed-copy children from authoritative directory records. */
-export function presentProjectDirectories(entries: StoredProject[], records: ProjectDirectoryRecord[]) {
+export function presentProjectDirectories(entries: string[], records: ProjectDirectoryRecord[]) {
   const byDirectory = new Map(records.map((record) => [pathKey(record.directory), record]))
   const parents = new Map<string, string>()
   const children = new Map<string, ProjectDirectoryRecord[]>()
@@ -24,17 +19,18 @@ export function presentProjectDirectories(entries: StoredProject[], records: Pro
     if (!parent || pathKey(parent) === pathKey(record.directory)) continue
     const key = pathKey(parent)
     parents.set(pathKey(record.directory), parent)
-    const existing = children.get(key) ?? []
-    children.set(key, [...existing, record])
+    const existing = children.get(key)
+    if (existing) existing.push(record)
+    if (!existing) children.set(key, [record])
   }
 
   const roots: string[] = []
   const known = new Set<string>()
   for (const entry of entries) {
-    const key = pathKey(entry.directory)
+    const key = pathKey(entry)
     if (parents.has(key) || known.has(key)) continue
     known.add(key)
-    roots.push(entry.directory)
+    roots.push(entry)
   }
   for (const parent of parents.values()) {
     const key = pathKey(parent)

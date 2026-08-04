@@ -41,6 +41,15 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/PermissionSaved") {}
 
+function listCondition(input?: ListInput) {
+  if (!input?.projectID) return
+  if (!input.directory) return eq(PermissionTable.project_id, input.projectID)
+  return and(
+    eq(PermissionTable.project_id, input.projectID),
+    or(eq(PermissionTable.directory, input.directory), isNull(PermissionTable.directory)),
+  )
+}
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -50,16 +59,7 @@ const layer = Layer.effect(
       const rows = yield* db
         .select()
         .from(PermissionTable)
-        .where(
-          input?.projectID
-            ? input.directory
-              ? and(
-                  eq(PermissionTable.project_id, input.projectID),
-                  or(eq(PermissionTable.directory, input.directory), isNull(PermissionTable.directory)),
-                )
-              : eq(PermissionTable.project_id, input.projectID)
-            : undefined,
-        )
+        .where(listCondition(input))
         .all()
         .pipe(Effect.orDie)
       return rows.map(
