@@ -2454,6 +2454,69 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("keeps another session runnable when a concurrent provider turn fails", () =>
+    Effect.gen(function* () {
+      yield* setup
+      yield* insertSession(otherSessionID)
+      const session = yield* SessionV2.Service
+      const failure = providerUnavailable()
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Fail A" }), resume: false })
+      yield* session.prompt({ sessionID: otherSessionID, prompt: Prompt.make({ text: "Finish B" }), resume: false })
+
+      requests.length = 0
+      responseStream = Stream.fail(failure)
+      response = fragmentFixture("text", "text-session-b", ["B complete"]).completeEvents
+      const first = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      while (requests.length < 1) yield* Effect.yieldNow
+      const second = yield* session.resume(otherSessionID).pipe(Effect.forkChild)
+
+      expect(yield* Fiber.join(first).pipe(Effect.flip)).toBe(failure)
+      yield* Fiber.join(second)
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Fail A" },
+        { type: "assistant", finish: "error", error: { message: "Provider unavailable" } },
+      ])
+      expect(yield* session.context(otherSessionID)).toMatchObject([
+        { type: "user", text: "Finish B" },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "B complete" }] },
+      ])
+    }),
+  )
+
+  it.effect("keeps another session running when an active provider turn is interrupted", () =>
+    Effect.gen(function* () {
+      yield* setup
+      yield* insertSession(otherSessionID)
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Interrupt A" }), resume: false })
+      yield* session.prompt({ sessionID: otherSessionID, prompt: Prompt.make({ text: "Finish B" }), resume: false })
+
+      requests.length = 0
+      response = fragmentFixture("text", "text-interrupt-session-b", ["B complete"]).completeEvents
+      streamGate = yield* Deferred.make<void>()
+      streamStarted = yield* Deferred.make<void>()
+      const first = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* Deferred.await(streamStarted)
+      const second = yield* session.resume(otherSessionID).pipe(Effect.forkChild)
+      while (requests.length < 2) yield* Effect.yieldNow
+      yield* session.interrupt(sessionID)
+      yield* Deferred.succeed(streamGate, undefined)
+
+      expect(yield* Fiber.await(first)).toMatchObject({ _tag: "Failure" })
+      yield* Fiber.join(second)
+      streamGate = undefined
+      streamStarted = undefined
+      expect(yield* session.context(sessionID)).toMatchObject([
+        { type: "user", text: "Interrupt A" },
+      ])
+      expect(yield* session.context(sessionID)).toHaveLength(1)
+      expect(yield* session.context(otherSessionID)).toMatchObject([
+        { type: "user", text: "Finish B" },
+        { type: "assistant", finish: "stop", content: [{ type: "text", text: "B complete" }] },
+      ])
+    }),
+  )
+
   it.effect("bounds 64-character session prompt cache keys", () =>
     Effect.gen(function* () {
       yield* setup

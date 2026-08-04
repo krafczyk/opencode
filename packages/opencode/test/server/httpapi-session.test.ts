@@ -1,10 +1,11 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { $ } from "bun"
 import { afterEach, describe, expect } from "bun:test"
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { mkdir } from "node:fs/promises"
+import { mkdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
-import { Cause, Config, Effect, Exit, Layer } from "effect"
+import { Cause, Config, Effect, Exit, Fiber, Layer } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -34,7 +35,7 @@ import * as DateTime from "effect/DateTime"
 import { eq } from "drizzle-orm"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, provideInstanceEffect, TestInstance, tmpdirScoped } from "../fixture/fixture"
-import { TestLLMServer } from "../lib/llm-server"
+import { reply, TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
@@ -424,6 +425,127 @@ describe("session HttpApi", () => {
         cwd: sessionDirectory,
         root: sessionDirectory,
       })
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+    { timeout: 15000 },
+  )
+
+  it.live("keeps concurrent same-repository session context and tool state in their stored directories", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const config = testProviderConfig(llm.url)
+      const directoryA = yield* tmpdirScoped({ git: true, config })
+      const directoryB = `${directoryA}-directory-b`
+      yield* Effect.addFinalizer(() => Effect.promise(() => rm(directoryB, { recursive: true, force: true })))
+      yield* Effect.promise(() => $`git worktree add --detach ${directoryB} HEAD`.cwd(directoryA).quiet())
+      yield* Effect.promise(() =>
+        Promise.all([
+          writeFile(`${directoryA}/AGENTS.md`, "DIRECTORY A INSTRUCTIONS\n"),
+          writeFile(`${directoryA}/a-sentinel.txt`, "A only\n"),
+          writeFile(`${directoryB}/AGENTS.md`, "DIRECTORY B INSTRUCTIONS\n"),
+          writeFile(`${directoryB}/b-sentinel.txt`, "B only\n"),
+          writeFile(
+            `${directoryB}/opencode.json`,
+            JSON.stringify({
+              ...config,
+              provider: {
+                ...config.provider,
+                test: {
+                  ...config.provider.test,
+                  models: {
+                    "test-model-b": { ...config.provider.test.models["test-model"], id: "test-model-b" },
+                  },
+                },
+              },
+            }),
+          ),
+        ]),
+      )
+
+      const projectA = yield* Project.use.fromDirectory(directoryA)
+      const projectB = yield* Project.use.fromDirectory(directoryB)
+      expect(projectA.project.id).toBe(projectB.project.id)
+
+      const sessionA = yield* createSession({
+        title: "A",
+        model: { providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model") },
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      }).pipe(provideInstanceEffect(directoryA))
+      const sessionB = yield* createSession({
+        title: "B",
+        model: { providerID: ProviderV2.ID.make("test"), id: ModelV2.ID.make("test-model-b") },
+        permission: [{ permission: "*", pattern: "*", action: "allow" }],
+      }).pipe(provideInstanceEffect(directoryB))
+      const release = Promise.withResolvers<void>()
+      yield* llm.pushMatch(
+        (hit) => JSON.stringify(hit.body).includes("DIRECTORY A INSTRUCTIONS"),
+        reply().wait(release.promise).tool("glob", { pattern: "a-sentinel.txt" }).stop(),
+      )
+      yield* llm.pushMatch(
+        (hit) => JSON.stringify(hit.body).includes("DIRECTORY B INSTRUCTIONS"),
+        reply().wait(release.promise).tool("glob", { pattern: "b-sentinel.txt" }).stop(),
+      )
+      yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("a-sentinel.txt"), "A complete")
+      yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("b-sentinel.txt"), "B complete")
+
+      const prompt = (sessionID: SessionIDType, directory: string, modelID: string, text: string) =>
+        request(`${pathFor(SessionPaths.prompt, { sessionID })}?directory=${encodeURIComponent(directory)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            agent: "build",
+            model: { providerID: "test", modelID },
+            parts: [{ type: "text", text }],
+          }),
+        }).pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))))
+      const first = yield* prompt(sessionA.id, directoryB, "test-model", "run A").pipe(Effect.forkScoped)
+      const second = yield* prompt(sessionB.id, directoryA, "test-model-b", "run B").pipe(Effect.forkScoped)
+
+      yield* llm.wait(2)
+      release.resolve()
+      yield* Effect.all([first, second].map(Fiber.join))
+
+      const inputs = yield* llm.inputs
+      const aInput = inputs.filter((input) => JSON.stringify(input).includes("DIRECTORY A INSTRUCTIONS"))
+      const bInput = inputs.filter((input) => JSON.stringify(input).includes("DIRECTORY B INSTRUCTIONS"))
+      expect(aInput).toHaveLength(2)
+      expect(bInput).toHaveLength(2)
+      expect(JSON.stringify(aInput)).toContain("a-sentinel.txt")
+      expect(JSON.stringify(aInput)).not.toContain("b-sentinel.txt")
+      expect(JSON.stringify(bInput)).toContain("b-sentinel.txt")
+      expect(JSON.stringify(bInput)).not.toContain("a-sentinel.txt")
+      expect(aInput.every((input) => input.model === "test-model")).toBe(true)
+      expect(bInput.every((input) => input.model === "test-model-b")).toBe(true)
+
+      const { db } = yield* Database.Service
+      expect(
+        yield* db
+          .select({ id: SessionTable.id, directory: SessionTable.directory })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionA.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ id: sessionA.id, directory: directoryA })
+      expect(
+        yield* db
+          .select({ id: SessionTable.id, directory: SessionTable.directory })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionB.id))
+          .get()
+          .pipe(Effect.orDie),
+      ).toEqual({ id: sessionB.id, directory: directoryB })
+
+      const sessionsA = yield* requestJson<Session.Info[]>(
+        `${SessionPaths.list}?directory=${encodeURIComponent(directoryA)}`,
+        { headers: { "x-opencode-directory": directoryA } },
+      )
+      const sessionsB = yield* requestJson<Session.Info[]>(
+        `${SessionPaths.list}?directory=${encodeURIComponent(directoryB)}`,
+        { headers: { "x-opencode-directory": directoryB } },
+      )
+      expect(sessionsA.map((session) => session.id)).toContain(sessionA.id)
+      expect(sessionsA.map((session) => session.id)).not.toContain(sessionB.id)
+      expect(sessionsB.map((session) => session.id)).toContain(sessionB.id)
+      expect(sessionsB.map((session) => session.id)).not.toContain(sessionA.id)
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
     { timeout: 15000 },
   )
