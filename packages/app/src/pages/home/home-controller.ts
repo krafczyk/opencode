@@ -4,6 +4,7 @@ import { ServerConnection, useServer } from "@/context/server"
 import { useServerSync } from "@/context/server-sync"
 import { useTabs } from "@/context/tabs"
 import { toggleHomeProjectSelection } from "@/pages/layout/helpers"
+import { pathKey } from "@/utils/path-key"
 import { createEffect, createMemo } from "solid-js"
 
 export function createHomeController() {
@@ -27,7 +28,9 @@ export function createHomeController() {
     () => focusedServerCtx()?.projects.recentlyClosed() ?? layout.projects.recentlyClosed(),
   )
   const homedir = createMemo(() => focusedSync().data.path.home ?? "")
-  const selectedProject = createMemo(() => projects().find((project) => project.worktree === selection().directory))
+  const selectedProject = createMemo(() =>
+    projects().find((project) => pathKey(project.worktree) === pathKey(selection().directory ?? "")),
+  )
   const newSessionProject = createMemo(
     () =>
       selectedProject() ??
@@ -81,7 +84,7 @@ export function createHomeController() {
           !global
             .ensureServerCtx(conn)
             .projects.list()
-            .some((project) => project.worktree === directory)
+            .some((project) => pathKey(project.worktree) === pathKey(directory))
         )
           return
         setSelection(toggleHomeProjectSelection(selection(), key, directory))
@@ -90,7 +93,10 @@ export function createHomeController() {
         const directory = directories[0]
         if (!directory) return
         const ctx = global.ensureServerCtx(conn)
-        directories.forEach((item) => ctx.projects.open(item))
+        directories.forEach((item) => {
+          ctx.projects.open(item)
+          void ctx.projects.register(item)
+        })
         ctx.projects.touch(directory)
         setSelection({ server: ServerConnection.key(conn), directory })
       },

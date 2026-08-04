@@ -23,6 +23,12 @@ import { showToast } from "@/utils/toast"
 import { Binary } from "@opencode-ai/core/util/binary"
 import { archiveHomeSession } from "../home-session-archive"
 import type { HomeController } from "./home-controller"
+import { sessionSearchKey } from "./home-sessions-helpers"
+
+/** Returns the directory-qualified identity used by home session search results. */
+export function homeSessionSearchKey(record: HomeSessionRecord) {
+  return sessionSearchKey(record.session)
+}
 
 const HOME_SESSION_LIMIT = 64
 export type HomeSessionRecord = {
@@ -269,10 +275,6 @@ function buildHomeSessionRecords(input: {
       if (!project) return []
       return { session, project, projectName: displayName(project) }
     })
-}
-
-export function homeSessionSearchKey(record: HomeSessionRecord) {
-  return `${pathKey(record.session.directory)}:${record.session.id}`
 }
 
 function groupSessions(records: HomeSessionRecord[], language: ReturnType<typeof useLanguage>): HomeSessionGroup[] {

@@ -197,6 +197,64 @@ describe("createServerProjects", () => {
       dispose()
     })
   })
+
+  test("persists only bounded explicit project-registration intent and confirms by normalized directory", () => {
+    createRoot((dispose) => {
+      const [scope] = createSignal(ServerScope.local)
+      const [store, setStore] = createStore({ projects: {}, lastProject: {}, recentlyClosed: {}, pendingProjectRegistration: {} })
+      const projects = createServerProjects({ scope, store, setStore })
+
+      projects.registerIntent("/checkout/a/")
+      projects.registerIntent("/checkout/a")
+      projects.registerIntent("/checkout/b")
+      expect(projects.pendingRegistration()).toEqual(["/checkout/b", "/checkout/a"])
+
+      projects.confirmRegistration("/checkout/a")
+      expect(projects.pendingRegistration()).toEqual(["/checkout/b"])
+      dispose()
+    })
+  })
+
+  test("does not duplicate normalized project entries when reopening a restored path", () => {
+    createRoot((dispose) => {
+      const [scope] = createSignal(ServerScope.local)
+      const [store, setStore] = createStore({ projects: {}, lastProject: {}, recentlyClosed: {} })
+      const projects = createServerProjects({ scope, store, setStore })
+
+      projects.open("/checkout/a")
+      projects.open("/checkout/a/")
+      expect(projects.list()).toEqual([{ worktree: "/checkout/a", expanded: true }])
+      dispose()
+    })
+  })
+
+  test("closing one same-project checkout leaves its sibling entry untouched", () => {
+    createRoot((dispose) => {
+      const [scope] = createSignal(ServerScope.local)
+      const [store, setStore] = createStore({ projects: {}, lastProject: {}, recentlyClosed: {} })
+      const projects = createServerProjects({ scope, store, setStore })
+
+      projects.open("/checkout/a")
+      projects.open("/checkout/b")
+      projects.close("/checkout/b")
+      expect(projects.list()).toEqual([{ worktree: "/checkout/a", expanded: true }])
+      expect(projects.recentlyClosed()).toEqual(["/checkout/b"])
+      dispose()
+    })
+  })
+
+  test("bounds pending registration intent", () => {
+    createRoot((dispose) => {
+      const [scope] = createSignal(ServerScope.local)
+      const [store, setStore] = createStore({ projects: {}, lastProject: {}, recentlyClosed: {} })
+      const projects = createServerProjects({ scope, store, setStore })
+
+      for (let index = 0; index < 20; index++) projects.registerIntent(`/checkout/${index}`)
+      expect(projects.pendingRegistration()).toHaveLength(16)
+      expect(projects.pendingRegistration()).toEqual(Array.from({ length: 16 }, (_, index) => `/checkout/${19 - index}`))
+      dispose()
+    })
+  })
 })
 
 describe("migrateCanonicalLocalServerState", () => {

@@ -21,6 +21,7 @@ import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./la
 import { requireServerKey } from "@/utils/session-route"
 import { type DraftTab, useTabs } from "./tabs"
 import { closeSessionTab, openSessionTab, previewSessionTab, type SessionTabs } from "./layout-tabs"
+import { presentProjectDirectories, type ProjectDirectoryRecord } from "./project-presentation"
 
 export { createSessionKeyReader, ensureSessionKey, pruneSessionKeys }
 
@@ -82,7 +83,11 @@ type TabHandoff = {
   at: number
 }
 
-export type LocalProject = Partial<Project> & { worktree: string; expanded: boolean }
+export type LocalProject = Partial<Project> & {
+  worktree: string
+  expanded: boolean
+  managedDirectories?: ProjectDirectoryRecord[]
+}
 export type HomeProjectSelection = { server: ServerConnection.Key; directory?: string }
 
 export type ReviewDiffStyle = "unified" | "split"
@@ -459,61 +464,70 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       return base
     }
 
-    const roots = createMemo(() => {
-      const map = new Map<string, string>()
+    createEffect(() => {
       for (const project of serverSync().data.project) {
-        const sandboxes = project.sandboxes ?? []
-        for (const sandbox of sandboxes) {
-          map.set(sandbox, project.worktree)
-        }
+        void serverSync().project.refreshDirectories(project.id, project.worktree).catch(() => undefined)
       }
-      return map
     })
 
-    const rootFor = (directory: string) => {
-      const map = roots()
-      if (map.size === 0) return directory
-
-      const visited = new Set<string>()
-      const chain = [directory]
-
-      while (chain.length) {
-        const current = chain[chain.length - 1]
-        if (!current) return directory
-
-        const next = map.get(current)
-        if (!next) return current
-
-        if (visited.has(next)) return directory
-        visited.add(next)
-        chain.push(next)
-      }
-
-      return directory
-    }
-
-    createEffect(() => {
-      const projects = server.projects.list()
-      const seen = new Set(projects.map((project) => project.worktree))
-
-      batch(() => {
-        for (const project of projects) {
-          const root = rootFor(project.worktree)
-          if (root === project.worktree) continue
-
-          server.projects.remove(project.worktree)
-
-          if (!seen.has(root)) {
-            server.projects.open(root)
-            seen.add(root)
-          }
-
-          if (project.expanded) server.projects.expand(root)
+    const enriched = createMemo(() => {
+      const entries = server.projects.list()
+      const projects = entries.map(enrich)
+      const records = serverSync().data.project.flatMap((project) =>
+        serverSync()
+          .project.directories(project.id)
+          .map((record) => ({ ...record, projectID: project.id, fallbackDirectory: project.worktree })),
+      )
+      const presentation = presentProjectDirectories(
+        entries.map((project) => ({ directory: project.worktree, expanded: project.expanded })),
+        records,
+      )
+      return presentation.roots.map((directory) => {
+        const key = pathKey(directory)
+        const existing = projects.find((project) => pathKey(project.worktree) === key)
+        const record = records.find((item) => pathKey(item.directory) === key)
+        const metadata = record ? serverSync().data.project.find((project) => project.id === record.projectID) : undefined
+        return {
+          ...metadata,
+          ...existing,
+          worktree: directory,
+          expanded: existing?.expanded ?? true,
+          managedDirectories: presentation.children(directory),
         }
       })
     })
+    const replayedRegistrations = new Set<string>()
+    const registerDirectory = (directory: string) => {
+      const key = pathKey(directory)
+      replayedRegistrations.add(key)
+      return serverSync()
+        .project.registerDirectory(directory)
+        .then((records) => {
+          if (records.some((record) => pathKey(record.directory) === key && record.kind === "user")) {
+            server.projects.confirmRegistration(directory)
+          }
+        })
+        .catch(() => undefined)
+    }
 
-    const enriched = createMemo(() => server.projects.list().map(enrich))
+    createEffect(() => {
+      if (!ready()) return
+      if (!serverSync().ready) return
+      for (const directory of server.projects.pendingRegistration()) {
+        const key = pathKey(directory)
+        const confirmed = serverSync().data.project.some((project) =>
+          serverSync()
+            .project.directories(project.id)
+            .some((record) => pathKey(record.directory) === key && record.kind === "user"),
+        )
+        if (confirmed) {
+          server.projects.confirmRegistration(directory)
+          continue
+        }
+        if (replayedRegistrations.has(key)) continue
+        void registerDirectory(directory)
+      }
+    })
     const list = createMemo(() => {
       const projects = enriched()
       return projects.map((project) => {
@@ -633,18 +647,19 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       projects: {
         list,
         recentlyClosed: createMemo(() => {
-          const known = new Set(serverSync().data.project.map((project) => pathKey(project.worktree)))
           return server.projects
             .recentlyClosed()
-            .filter((worktree) => known.has(pathKey(worktree)))
             .slice(0, RECENTLY_CLOSED_DISPLAY_LIMIT)
             .map((worktree) => enrich({ worktree, expanded: false }))
         }),
         open(directory: string) {
-          const root = rootFor(directory)
-          if (server.projects.list().find((x) => x.worktree === root)) return
-          void serverSync().project.loadSessions(root)
-          server.projects.open(root)
+          if (server.projects.list().some((project) => pathKey(project.worktree) === pathKey(directory))) return
+          void serverSync().project.loadSessions(directory)
+          server.projects.open(directory)
+        },
+        register(directory: string) {
+          server.projects.registerIntent(directory)
+          void registerDirectory(directory)
         },
         close(directory: string) {
           server.projects.close(directory)

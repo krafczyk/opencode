@@ -60,6 +60,7 @@ import { TabsInfoPopup } from "@/components/help-button"
 import { Titlebar, type TitlebarUpdate } from "@/components/titlebar"
 import { useDirectoryPicker } from "@/components/directory-picker"
 import { ServerConnection, useServer } from "@/context/server"
+import { canRemoveManagedDirectory } from "@/context/project-presentation"
 import { useLanguage, type Locale } from "@/context/language"
 import { pathKey } from "@/utils/path-key"
 import {
@@ -522,21 +523,9 @@ export default function LegacyLayout(props: ParentProps) {
 
     const projects = layout.projects.list()
 
-    const sandbox = projects.find((p) => p.sandboxes?.some((item) => pathKey(item) === key))
-    if (sandbox) return sandbox
-
     const direct = projects.find((p) => pathKey(p.worktree) === key)
     if (direct) return direct
-
-    const [child] = serverSync().child(directory, { bootstrap: false })
-    const id = child.project
-    if (!id) return
-
-    const meta = serverSync().data.project.find((p) => p.id === id)
-    const root = meta?.worktree
-    if (!root) return
-
-    return projects.find((p) => p.worktree === root)
+    return projects.find((project) => project.managedDirectories?.some((item) => pathKey(item.directory) === key))
   })
 
   const [autoselecting] = createResource(async () => {
@@ -608,7 +597,8 @@ export default function LegacyLayout(props: ParentProps) {
       if (!expanded) continue
       const key = pathKey(directory)
       const project = projects.find(
-        (item) => pathKey(item.worktree) === key || item.sandboxes?.some((sandbox) => pathKey(sandbox) === key),
+        (item) =>
+          pathKey(item.worktree) === key || item.managedDirectories?.some((workspace) => pathKey(workspace.directory) === key),
       )
       if (!project) continue
       if (project.vcs === "git" && layout.sidebar.workspaces(project.worktree)()) continue
@@ -1128,7 +1118,10 @@ export default function LegacyLayout(props: ParentProps) {
     const key = pathKey(directory)
     const project = layout.projects
       .list()
-      .find((item) => pathKey(item.worktree) === key || item.sandboxes?.some((sandbox) => pathKey(sandbox) === key))
+      .find(
+        (item) =>
+          pathKey(item.worktree) === key || item.managedDirectories?.some((workspace) => pathKey(workspace.directory) === key),
+      )
     if (project) return project.worktree
 
     const known = Object.entries(store.workspaceOrder).find(
@@ -1136,12 +1129,7 @@ export default function LegacyLayout(props: ParentProps) {
     )
     if (known) return known[0]
 
-    const [child] = serverSync().child(directory, { bootstrap: false })
-    const id = child.project
-    if (!id) return directory
-
-    const meta = serverSync().data.project.find((item) => item.id === id)
-    return meta?.worktree ?? directory
+    return directory
   }
 
   function activeProjectRoot(directory: string) {
@@ -1180,7 +1168,11 @@ export default function LegacyLayout(props: ParentProps) {
     server.projects.touch(root)
     const project = layout.projects.list().find((item) => item.worktree === root)
     let dirs = project
-      ? effectiveWorkspaceOrder(root, [root, ...(project.sandboxes ?? [])], store.workspaceOrder[root])
+      ? effectiveWorkspaceOrder(
+          root,
+          [root, ...(project.managedDirectories?.map((workspace) => workspace.directory) ?? [])],
+          store.workspaceOrder[root],
+        )
       : [root]
     const canOpen = (value: string | undefined) => {
       if (!value) return false
@@ -1374,10 +1366,12 @@ export default function LegacyLayout(props: ParentProps) {
     function resolve(result: string | string[] | null) {
       if (Array.isArray(result)) {
         for (const directory of result) {
+          layout.projects.register(directory)
           void openProject(directory, false)
         }
         void navigateToProject(result[0])
       } else if (result) {
+        layout.projects.register(result)
         void openProject(result)
       }
     }
@@ -1422,14 +1416,6 @@ export default function LegacyLayout(props: ParentProps) {
       clearLastProjectSession(root)
     }
 
-    serverSync().set(
-      "project",
-      produce((draft) => {
-        const project = draft.find((item) => item.worktree === root)
-        if (!project) return
-        project.sandboxes = (project.sandboxes ?? []).filter((sandbox) => sandbox !== directory)
-      }),
-    )
     setStore("workspaceOrder", root, (order) => (order ?? []).filter((workspace) => workspace !== directory))
 
     layout.projects.close(directory)
@@ -1441,7 +1427,11 @@ export default function LegacyLayout(props: ParentProps) {
     const nextKey = pathKey(nextCurrent)
     const project = layout.projects.list().find((item) => item.worktree === root)
     const dirs = project
-      ? effectiveWorkspaceOrder(root, [root, ...(project.sandboxes ?? [])], store.workspaceOrder[root])
+      ? effectiveWorkspaceOrder(
+          root,
+          [root, ...(project.managedDirectories?.map((workspace) => workspace.directory) ?? [])],
+          store.workspaceOrder[root],
+        )
       : [root]
     const valid = dirs.some((item) => pathKey(item) === nextKey)
 
@@ -1776,7 +1766,7 @@ export default function LegacyLayout(props: ParentProps) {
   function workspaceIds(project: LocalProject | undefined) {
     if (!project) return []
     const local = project.worktree
-    const dirs = [local, ...(project.sandboxes ?? [])]
+    const dirs = [local, ...(project.managedDirectories?.map((workspace) => workspace.directory) ?? [])]
     const active = currentProject()
     const directory = pathKey(active?.worktree ?? "") === pathKey(project.worktree) ? currentDir() : undefined
     const extra =
@@ -1895,6 +1885,12 @@ export default function LegacyLayout(props: ParentProps) {
       dialog.show(() => <DialogResetWorkspace root={root} directory={directory} />),
     showDeleteWorkspaceDialog: (root, directory) =>
       dialog.show(() => <DialogDeleteWorkspace root={root} directory={directory} />),
+    canManageWorkspace: (root, directory) =>
+      canRemoveManagedDirectory(
+        layout.projects.list().find((project) => pathKey(project.worktree) === pathKey(root))?.managedDirectories?.find(
+          (item) => pathKey(item.directory) === pathKey(directory),
+        ),
+      ),
     setScrollContainerRef: (el, mobile) => {
       if (!mobile) scrollContainerRef = el
     },

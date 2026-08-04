@@ -54,6 +54,7 @@ export type WorkspaceSidebarContext = {
   setWorkspaceExpanded: (directory: string, value: boolean) => void
   showResetWorkspaceDialog: (root: string, directory: string) => void
   showDeleteWorkspaceDialog: (root: string, directory: string) => void
+  canManageWorkspace: (root: string, directory: string) => boolean
   setScrollContainerRef: (el: HTMLDivElement | undefined, mobile?: boolean) => void
 }
 
@@ -152,6 +153,7 @@ const WorkspaceActions = (props: {
   openEditor: WorkspaceSidebarContext["openEditor"]
   showResetWorkspaceDialog: WorkspaceSidebarContext["showResetWorkspaceDialog"]
   showDeleteWorkspaceDialog: WorkspaceSidebarContext["showDeleteWorkspaceDialog"]
+  canManageWorkspace: WorkspaceSidebarContext["canManageWorkspace"]
   root: string
   clearHoverProjectSoon: WorkspaceSidebarContext["clearHoverProjectSoon"]
   navigateToNewSession: () => void
@@ -200,13 +202,13 @@ const WorkspaceActions = (props: {
             <DropdownMenu.ItemLabel>{props.language.t("common.rename")}</DropdownMenu.ItemLabel>
           </DropdownMenu.Item>
           <DropdownMenu.Item
-            disabled={props.local() || props.busy()}
+            disabled={props.local() || props.busy() || !props.canManageWorkspace(props.root, props.directory)}
             onSelect={() => props.showResetWorkspaceDialog(props.root, props.directory)}
           >
             <DropdownMenu.ItemLabel>{props.language.t("common.reset")}</DropdownMenu.ItemLabel>
           </DropdownMenu.Item>
           <DropdownMenu.Item
-            disabled={props.local() || props.busy()}
+            disabled={props.local() || props.busy() || !props.canManageWorkspace(props.root, props.directory)}
             onSelect={() => props.showDeleteWorkspaceDialog(props.root, props.directory)}
           >
             <DropdownMenu.ItemLabel>{props.language.t("common.delete")}</DropdownMenu.ItemLabel>
@@ -417,6 +419,7 @@ export const SortableWorkspace = (props: {
                 openEditor={props.ctx.openEditor}
                 showResetWorkspaceDialog={props.ctx.showResetWorkspaceDialog}
                 showDeleteWorkspaceDialog={props.ctx.showDeleteWorkspaceDialog}
+                canManageWorkspace={props.ctx.canManageWorkspace}
                 root={props.project.worktree}
                 clearHoverProjectSoon={props.ctx.clearHoverProjectSoon}
                 navigateToNewSession={() => navigate(`/${slug()}/session`)}

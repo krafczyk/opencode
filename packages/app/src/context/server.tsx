@@ -11,6 +11,7 @@ type ServerProjectState = {
   projects: Record<string, StoredProject[]>
   lastProject: Record<string, string>
   recentlyClosed: Record<string, string[]>
+  pendingProjectRegistration?: Record<string, string[]>
 }
 const HEALTH_POLL_INTERVAL_MS = 10_000
 // The store retains more history than is displayed. Consumers filter recently closed entries
@@ -18,6 +19,7 @@ const HEALTH_POLL_INTERVAL_MS = 10_000
 // RECENTLY_CLOSED_DISPLAY_LIMIT. Retaining extra history ensures entries that are temporarily
 // filtered out do not evict still-visible ones from the persisted store.
 const RECENTLY_CLOSED_HISTORY_LIMIT = 16
+const PENDING_PROJECT_REGISTRATION_LIMIT = 16
 export const RECENTLY_CLOSED_DISPLAY_LIMIT = 5
 
 export function normalizeServerUrl(input: string) {
@@ -84,16 +86,42 @@ export function createServerProjects<T extends ServerProjectState>(input: {
   const setStore = input.setStore as unknown as SetStoreFunction<ServerProjectState>
   const current = () => input.store.projects[input.scope()] ?? []
   const currentClosed = () => input.store.recentlyClosed?.[input.scope()] ?? []
+  const pendingRegistration = () => input.store.pendingProjectRegistration?.[input.scope()] ?? []
   const remove = (directory: string) => {
     setStore(
       "projects",
       input.scope(),
-      current().filter((project) => project.worktree !== directory),
+      current().filter((project) => pathKey(project.worktree) !== pathKey(directory)),
     )
   }
   return {
     list: current,
     recentlyClosed: currentClosed,
+    pendingRegistration,
+    registerIntent(directory: string) {
+      const scope = input.scope()
+      const key = pathKey(directory)
+      const next = [directory, ...pendingRegistration().filter((item) => pathKey(item) !== key)].slice(
+        0,
+        PENDING_PROJECT_REGISTRATION_LIMIT,
+      )
+      if (!input.store.pendingProjectRegistration) {
+        setStore("pendingProjectRegistration", { [scope]: next })
+        return
+      }
+      setStore("pendingProjectRegistration", scope, next)
+    },
+    confirmRegistration(directory: string) {
+      const scope = input.scope()
+      const key = pathKey(directory)
+      const next = pendingRegistration().filter((item) => pathKey(item) !== key)
+      if (next.length === pendingRegistration().length) return
+      if (!input.store.pendingProjectRegistration) {
+        setStore("pendingProjectRegistration", { [scope]: next })
+        return
+      }
+      setStore("pendingProjectRegistration", scope, next)
+    },
     remove,
     open(directory: string) {
       const scope = input.scope()
@@ -106,7 +134,7 @@ export function createServerProjects<T extends ServerProjectState>(input: {
           closed.filter((worktree) => pathKey(worktree) !== key),
         )
       }
-      if (current().some((project) => project.worktree === directory)) return
+      if (current().some((project) => pathKey(project.worktree) === key)) return
       setStore("projects", scope, [{ worktree: directory, expanded: true }, ...current()])
     },
     // User-initiated close: removes the project and records it in recently closed.
@@ -270,6 +298,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         projects: {} as Record<string, StoredProject[]>,
         lastProject: {} as Record<string, string>,
         recentlyClosed: {} as Record<string, string[]>,
+        pendingProjectRegistration: {} as Record<string, string[]>,
       }),
     )
 

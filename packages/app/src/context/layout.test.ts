@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot, createSignal } from "solid-js"
 import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./layout-helpers"
+import { canRemoveManagedDirectory, presentProjectDirectories } from "./project-presentation"
 
 describe("layout session-key helpers", () => {
   test("couples touch and scroll seed in order", () => {
@@ -65,5 +66,102 @@ describe("pruneSessionKeys", () => {
     })
 
     expect(drop).toEqual([])
+  })
+})
+
+describe("project directory presentation", () => {
+  test("keeps user-added same-project directories as independently ordered roots", () => {
+    const presentation = presentProjectDirectories(
+      [
+        { directory: "/checkout/b", expanded: true },
+        { directory: "/checkout/a", expanded: false },
+      ],
+      [
+        { projectID: "repo", directory: "/checkout/a", kind: "user", fallbackDirectory: "/checkout/a" },
+        { projectID: "repo", directory: "/checkout/b", kind: "user", fallbackDirectory: "/checkout/a" },
+      ],
+    )
+
+    expect(presentation.roots).toEqual(["/checkout/b", "/checkout/a"])
+    expect(presentation.children("/checkout/a")).toEqual([])
+    expect(presentation.children("/checkout/b")).toEqual([])
+  })
+
+  test("keeps unresolved and failed persisted paths selectable without managed actions", () => {
+    const presentation = presentProjectDirectories(
+      [
+        { directory: "/checkout/pending", expanded: true },
+        { directory: "/checkout/failed", expanded: true },
+      ],
+      [],
+    )
+
+    expect(presentation.roots).toEqual(["/checkout/pending", "/checkout/failed"])
+    expect(presentation.parent("/checkout/pending")).toBeUndefined()
+    expect(canRemoveManagedDirectory(undefined)).toBe(false)
+  })
+
+  test("groups managed copies by exact persisted source without collapsing another user checkout", () => {
+    const presentation = presentProjectDirectories(
+      [
+        { directory: "/checkout/a", expanded: true },
+        { directory: "/checkout/b", expanded: true },
+        { directory: "/work/a-copy", expanded: true },
+        { directory: "/work/b-copy", expanded: true },
+      ],
+      [
+        { projectID: "repo", directory: "/checkout/a", kind: "user", fallbackDirectory: "/checkout/a" },
+        { projectID: "repo", directory: "/checkout/b", kind: "user", fallbackDirectory: "/checkout/a" },
+        {
+          projectID: "repo",
+          directory: "/work/a-copy",
+          kind: "managed",
+          strategy: "worktree",
+          sourceDirectory: "/checkout/a",
+          fallbackDirectory: "/checkout/a",
+        },
+        {
+          projectID: "repo",
+          directory: "/work/b-copy",
+          kind: "managed",
+          strategy: "worktree",
+          sourceDirectory: "/checkout/b",
+          fallbackDirectory: "/checkout/a",
+        },
+      ],
+    )
+
+    expect(presentation.roots).toEqual(["/checkout/a", "/checkout/b"])
+    expect(presentation.children("/checkout/a").map((item) => item.directory)).toEqual(["/work/a-copy"])
+    expect(presentation.children("/checkout/b").map((item) => item.directory)).toEqual(["/work/b-copy"])
+    expect(canRemoveManagedDirectory(presentation.managed("/work/a-copy"))).toBe(true)
+  })
+
+  test("uses only the compatibility root for legacy managed rows", () => {
+    const presentation = presentProjectDirectories(
+      [
+        { directory: "/checkout/b", expanded: true },
+        { directory: "/work/legacy", expanded: true },
+      ],
+      [
+        { projectID: "repo", directory: "/checkout/b", kind: "user", fallbackDirectory: "/checkout/a" },
+        {
+          projectID: "repo",
+          directory: "/work/legacy",
+          kind: "managed",
+          strategy: "worktree",
+          fallbackDirectory: "/checkout/a",
+        },
+      ],
+    )
+
+    expect(presentation.roots).toEqual(["/checkout/b", "/checkout/a"])
+    expect(presentation.children("/checkout/a").map((item) => item.directory)).toEqual(["/work/legacy"])
+    expect(presentation.children("/checkout/b")).toEqual([])
+  })
+
+  test("does not authorize removal for strategy-free managed records", () => {
+    expect(canRemoveManagedDirectory({ directory: "/discovered", kind: "managed" })).toBe(false)
+    expect(canRemoveManagedDirectory({ directory: "/user", kind: "user", strategy: "worktree" })).toBe(false)
   })
 })

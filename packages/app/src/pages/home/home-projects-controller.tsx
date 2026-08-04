@@ -33,7 +33,7 @@ export function createHomeProjectsController(home: HomeController) {
     { initialValue: _state },
   )
   function directories(project: LocalProject) {
-    return [project.worktree, ...(project.sandboxes ?? [])]
+    return [project.worktree, ...(project.managedDirectories?.map((workspace) => workspace.directory) ?? [])]
   }
 
   function canRevealProject(conn: ServerConnection.Any) {

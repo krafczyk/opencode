@@ -3,6 +3,7 @@ import type {
   OpencodeClient,
   Path,
   Project,
+  ProjectDirectories,
   ProviderAuthResponse,
   SessionStatus,
 } from "@opencode-ai/sdk/v2/client"
@@ -289,6 +290,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   })
 
   const queryClient = useQueryClient()
+  const [projectDirectories, setProjectDirectories] = createStore<Record<string, ProjectDirectories>>({})
   const homeSessions = createHomeSessionIndexCache(queryClient, ServerConnection.key(serverSDK.server))
   const refreshProviders = () =>
     queryClient.refetchQueries({
@@ -300,6 +302,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   let eventFrame: number | undefined
   let eventTimer: ReturnType<typeof setTimeout> | undefined
   let projectRefreshVersion = 0
+  const projectDirectoryRefreshVersion = new Map<string, number>()
 
   onCleanup(() => {
     if (eventFrame !== undefined) cancelAnimationFrame(eventFrame)
@@ -310,11 +313,27 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     setGlobalStore("project", next)
   }
 
+  const loadProjectDirectories = async (projectID: string, directory: string) => {
+    if ((await serverSDK.protocol) === "v1") return projectDirectories[projectID] ?? []
+    const version = (projectDirectoryRefreshVersion.get(projectID) ?? 0) + 1
+    projectDirectoryRefreshVersion.set(projectID, version)
+    const result = await serverSDK.client.project.directories({ projectID, directory })
+    const directories = result.data ?? []
+    if (projectDirectoryRefreshVersion.get(projectID) !== version) return directories
+    setProjectDirectories(projectID, directories)
+    return directories
+  }
+
   const refreshProjects = async () => {
     const version = ++projectRefreshVersion
     const projects = await queryClient.fetchQuery(loadProjectsQuery(serverSDK.scope, serverSDK.api.project))
     if (version !== projectRefreshVersion) return
     setProjects(projects)
+    void Promise.all(
+      [...new Map(projects.map((project) => [project.id, project])).values()].map((project) =>
+        loadProjectDirectories(project.id, project.worktree).catch(() => undefined),
+      ),
+    )
   }
 
   const setBootStore = ((...input: unknown[]) => {
@@ -661,6 +680,20 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
 
   const projectApi = {
     loadSessions,
+    directories(projectID: string) {
+      return projectDirectories[projectID] ?? []
+    },
+    refreshDirectories: loadProjectDirectories,
+    async registerDirectory(directory: string) {
+      if ((await serverSDK.protocol) !== "v1") {
+        const result = await serverSDK.client.project.registerCurrentDirectory({ directory })
+        const directories = result.data ?? []
+        const project = await serverSDK.api.project.current({ location: { directory } })
+        setProjectDirectories(project.id, directories)
+        return directories
+      }
+      throw new Error("Project directory registration requires a V2 server")
+    },
     meta(directory: string, patch: ProjectMeta) {
       children.projectMeta(directory, patch)
     },

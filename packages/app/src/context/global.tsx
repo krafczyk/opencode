@@ -9,6 +9,7 @@ import { createServerSyncContext } from "./server-sync"
 import { getOwner } from "solid-js/web"
 import { QueryClient } from "@tanstack/solid-query"
 import type { ServerScope } from "@/utils/server-scope"
+import { presentProjectDirectories } from "./project-presentation"
 
 export const { use: useGlobal, provider: GlobalProvider } = createSimpleContext({
   name: "Global",
@@ -127,14 +128,68 @@ function createServerCtx(
     return base
   }
 
-  const projectsList = createMemo(() => projects.list().map(enrich))
+  createEffect(() => {
+    for (const project of sync.data.project) {
+      void sync.project.refreshDirectories(project.id, project.worktree).catch(() => undefined)
+    }
+  })
+  const projectsList = createMemo(() => {
+    const entries = projects.list()
+    const enriched = entries.map(enrich)
+    const records = sync.data.project.flatMap((project) =>
+      sync.project.directories(project.id).map((record) => ({ ...record, projectID: project.id, fallbackDirectory: project.worktree })),
+    )
+    const presentation = presentProjectDirectories(
+      entries.map((project) => ({ directory: project.worktree, expanded: project.expanded })),
+      records,
+    )
+    return presentation.roots.map((directory) => {
+      const existing = enriched.find((project) => pathKey(project.worktree) === pathKey(directory))
+      const record = records.find((item) => pathKey(item.directory) === pathKey(directory))
+      const metadata = record ? sync.data.project.find((project) => project.id === record.projectID) : undefined
+      return {
+        ...metadata,
+        ...existing,
+        worktree: directory,
+        expanded: existing?.expanded ?? true,
+        managedDirectories: presentation.children(directory),
+      }
+    })
+  })
   const recentlyClosedList = createMemo(() => {
-    const known = new Set(sync.data.project.map((project) => pathKey(project.worktree)))
     return projects
       .recentlyClosed()
-      .filter((worktree) => known.has(pathKey(worktree)))
       .slice(0, RECENTLY_CLOSED_DISPLAY_LIMIT)
       .map((worktree) => enrich({ worktree, expanded: false }))
+  })
+  const replayedRegistrations = new Set<string>()
+  const register = async (directory: string) => {
+    projects.registerIntent(directory)
+    replayedRegistrations.add(pathKey(directory))
+    return sync.project
+      .registerDirectory(directory)
+      .then((records) => {
+        if (records.some((record) => pathKey(record.directory) === pathKey(directory) && record.kind === "user")) {
+          projects.confirmRegistration(directory)
+        }
+      })
+      .catch(() => undefined)
+  }
+
+  createEffect(() => {
+    if (!sync.ready) return
+    for (const directory of projects.pendingRegistration()) {
+      const key = pathKey(directory)
+      const confirmed = sync.data.project.some((project) =>
+        sync.project.directories(project.id).some((record) => pathKey(record.directory) === key && record.kind === "user"),
+      )
+      if (confirmed) {
+        projects.confirmRegistration(directory)
+        continue
+      }
+      if (replayedRegistrations.has(key)) continue
+      void register(directory)
+    }
   })
 
   const isLocal =
@@ -149,6 +204,7 @@ function createServerCtx(
       ...projects,
       list: projectsList,
       recentlyClosed: recentlyClosedList,
+      register,
     },
   }
 }
