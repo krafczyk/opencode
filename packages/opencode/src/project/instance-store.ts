@@ -17,9 +17,21 @@ export interface LoadInput {
   project?: Project.Info
 }
 
+/** The bounded server-side result of one exact-instance reload attempt. */
+export type ControlledReloadResult =
+  | { readonly type: "completed"; readonly context: InstanceContext }
+  | { readonly type: "recovery_failed" }
+  | { readonly type: "uncertain" }
+
 export interface Interface {
   readonly load: (input: LoadInput) => Effect.Effect<InstanceContext>
   readonly reload: (input: LoadInput) => Effect.Effect<InstanceContext>
+  /**
+   * Reloads one exact instance once and returns a bounded outcome for server controls.
+   * It has the same disposal and bootstrap side effects as `reload`, but does not expose bootstrap or disposer failures
+   * as an untyped failure to the control policy.
+   */
+  readonly reloadForControl: (input: LoadInput) => Effect.Effect<ControlledReloadResult>
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeDirectory: (directory: string) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
@@ -144,6 +156,14 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       ).pipe(Effect.withSpan("InstanceStore.reload"))
     }
 
+    const reloadForControl = Effect.fn("InstanceStore.reloadForControl")(function* (input: LoadInput) {
+      return yield* reload(input).pipe(
+        Effect.uninterruptible,
+        Effect.map((context) => ({ type: "completed" as const, context })),
+        Effect.catchCause(() => Effect.succeed({ type: "recovery_failed" as const })),
+      )
+    })
+
     const dispose = Effect.fn("InstanceStore.dispose")(function* (ctx: InstanceContext) {
       const entry = cache.get(ctx.directory)
       if (!entry) return yield* disposeContext(ctx)
@@ -194,6 +214,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     return Service.of({
       load,
       reload,
+      reloadForControl,
       dispose,
       disposeDirectory,
       disposeAll,
