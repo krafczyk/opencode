@@ -54,14 +54,15 @@ const layer = Layer.effect(
       if (!current || current.location.directory !== input.expectedSource) {
         return yield* new StaleSourceError({ sessionID: input.sessionID, expectedSource: input.expectedSource })
       }
+      const subdirectory = path.relative(input.root, input.destination).replaceAll("\\", "/")
       return yield* Effect.gen(function* () {
         yield* events.publish(
           SessionEvent.Moved,
           {
             sessionID: input.sessionID,
             location: Location.Ref.make({ directory: input.root }),
-            subdirectory: RelativePath.make(path.relative(input.root, input.destination).replaceAll("\\", "/")),
-            registerRoot: true,
+            // Legacy moves store a plain relative path; the control prefix makes registration intent replayable.
+            subdirectory: RelativePath.make(subdirectory ? `./${subdirectory}` : "."),
             timestamp: yield* DateTime.now,
           },
           {
