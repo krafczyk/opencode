@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { Schema } from "effect"
 import { Event } from "../src/event"
+import { SessionEvent } from "../src/session-event"
 
 describe("public event schemas", () => {
   test("definition is pure", () => {
@@ -33,5 +34,27 @@ describe("public event schemas", () => {
     })
 
     expect(Event.durable([definition]).get("test.durable.1")).toBe(definition)
+  })
+
+  test("moved events preserve legacy payloads while carrying explicit root-registration intent", () => {
+    const decode = Schema.decodeUnknownSync(SessionEvent.Moved.data)
+
+    expect(
+      decode({
+        sessionID: "ses_moved",
+        location: { directory: "/repo" },
+        subdirectory: "nested",
+        registerRoot: true,
+        timestamp: 0,
+      }).registerRoot,
+    ).toBe(true)
+    expect(
+      decode({
+        sessionID: "ses_moved",
+        location: { directory: "/repo/nested" },
+        subdirectory: "nested",
+        timestamp: 0,
+      }).registerRoot,
+    ).toBeUndefined()
   })
 })

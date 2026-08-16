@@ -121,6 +121,11 @@ export interface PublishOptions {
   readonly location?: Location.Ref
   /** Local operational projection committed atomically with a new durable event. Not replayed or serialized. */
   readonly commit?: (seq: number) => Effect.Effect<void>
+  /**
+   * Verifies a durable-event precondition inside the event transaction before projectors run.
+   * This hook is local-only and never serialized, so replay remains determined by the event payload.
+   */
+  readonly beforeProject?: () => Effect.Effect<void>
 }
 
 export interface Interface {
@@ -212,6 +217,7 @@ export const layerWith = (options?: LayerOptions) =>
           readonly strictOwner?: boolean
         },
         commit?: (seq: number) => Effect.Effect<void>,
+        beforeProject?: () => Effect.Effect<void>,
       ) {
         return Effect.gen(function* () {
           const durable = definition?.durable
@@ -317,6 +323,7 @@ export const layerWith = (options?: LayerOptions) =>
                             ...event,
                             durable: { aggregateID, seq, version: durable.version },
                           } as Payload
+                          if (beforeProject) yield* beforeProject()
                           for (const projector of list) {
                             yield* projector(committed)
                           }
@@ -366,9 +373,13 @@ export const layerWith = (options?: LayerOptions) =>
         })
       }
 
-      function publishEvent<D extends Definition>(definition: D, event: Payload<D>, commit?: PublishOptions["commit"]) {
+      function publishEvent<D extends Definition>(
+        definition: D,
+        event: Payload<D>,
+        options?: Pick<PublishOptions, "commit" | "beforeProject">,
+      ) {
         return Effect.gen(function* () {
-          if (!definition?.durable && commit)
+          if (!definition?.durable && (options?.commit || options?.beforeProject))
             return yield* Effect.die(
               new InvalidDurableEventError({
                 type: event.type,
@@ -376,7 +387,13 @@ export const layerWith = (options?: LayerOptions) =>
               }),
             )
           if (definition?.durable) {
-            const committed = yield* commitDurableEvent(definition, event as Payload, undefined, commit)
+            const committed = yield* commitDurableEvent(
+              definition,
+              event as Payload,
+              undefined,
+              options?.commit,
+              options?.beforeProject,
+            )
             if (committed) {
               event = {
                 ...event,
@@ -433,7 +450,7 @@ export const layerWith = (options?: LayerOptions) =>
               ...(location ? { location } : {}),
               data,
             } as Payload<D>,
-            options?.commit,
+            options,
           )
         })
       }

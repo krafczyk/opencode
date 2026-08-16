@@ -132,6 +132,29 @@ describe("ProjectV2.resolve", () => {
     }),
   )
 
+  it.live("reads canonical origin identity from nested checkouts and excludes file remotes", () =>
+    Effect.gen(function* () {
+      const remote = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      const file = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(() => initRepo(remote.path, { commit: true, remote: "git@github.com:owner/repo.git" }))
+      yield* Effect.promise(() => initRepo(file.path, { commit: true, remote: `file://${file.path}` }))
+      yield* Effect.promise(() => fs.mkdir(path.join(remote.path, "nested")))
+      const project = yield* ProjectV2.Service
+
+      expect(yield* project.origin(abs(path.join(remote.path, "nested")))).toMatchObject({
+        root: yield* real(remote.path),
+        identity: "github.com/owner/repo",
+      })
+      expect(yield* project.origin(abs(file.path))).toMatchObject({ root: yield* real(file.path), identity: undefined })
+    }),
+  )
+
   it.live("ignores file remotes and falls back to root commit", () =>
     Effect.gen(function* () {
       const tmp = yield* Effect.acquireRelease(

@@ -34,9 +34,44 @@ export interface Resolved {
   readonly vcs?: Vcs
 }
 
+/**
+ * Canonicalizes an `origin` remote for project identity comparison.
+ * SSH SCP syntax and URL syntax normalize to the same host/path identity; file remotes and malformed
+ * values return `undefined` because they are intentionally not remote project identities.
+ */
+export function normalizeOrigin(input: string): string | undefined {
+  const value = input.trim()
+  if (!value) return undefined
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol === "file:") return undefined
+    return originParts(parsed.hostname, parsed.pathname)
+  } catch {
+    const scp = value.match(/^([^@/:]+@)?([^/:]+):(.+)$/)
+    return scp ? originParts(scp[2], scp[3]) : undefined
+  }
+}
+
+function originParts(host: string, name: string) {
+  const pathname = name
+    .replace(/^\/+/, "")
+    .replace(/\.git\/?$/, "")
+    .replace(/\/+$/, "")
+  if (!host || !pathname) return undefined
+  return `${host.toLowerCase()}/${pathname}`
+}
+
 export interface Interface {
   readonly directories: (input: DirectoriesInput) => Effect.Effect<Directories>
   readonly resolve: (input: AbsolutePath) => Effect.Effect<Resolved>
+  /**
+   * Reads the canonical `origin` identity for a Git checkout containing `directory`.
+   * It returns `undefined` for non-Git directories; a Git checkout with an origin-less, file-remote, or malformed origin
+   * returns its root without an identity. It does not mutate Git state.
+   */
+  readonly origin: (
+    directory: AbsolutePath,
+  ) => Effect.Effect<{ readonly root: AbsolutePath; readonly identity?: string } | undefined>
   /**
    * Temporary bridge method for writing the resolved project ID to the repo-local cache.
    *
@@ -73,34 +108,10 @@ const layer = Layer.effect(
     const remote = Effect.fnUntraced(function* (repo: Git.Repository) {
       const origin = yield* git.remote.get(repo)
       if (!origin) return undefined
-      const normalized = url(origin)
+      const normalized = normalizeOrigin(origin)
       if (!normalized) return undefined
       return ID.make(Hash.fast(`git-remote:${normalized}`))
     })
-
-    function url(input: string) {
-      const value = input.trim()
-      if (!value) return undefined
-
-      try {
-        const parsed = new URL(value)
-        if (parsed.protocol === "file:") return undefined
-        return parts(parsed.hostname, parsed.pathname)
-      } catch {
-        const scp = value.match(/^([^@/:]+@)?([^/:]+):(.+)$/)
-        if (scp) return parts(scp[2], scp[3])
-        return undefined
-      }
-    }
-
-    function parts(host: string, name: string) {
-      const pathname = name
-        .replace(/^\/+/, "")
-        .replace(/\.git\/?$/, "")
-        .replace(/\/+$/, "")
-      if (!host || !pathname) return undefined
-      return `${host.toLowerCase()}/${pathname}`
-    }
 
     const root = Effect.fnUntraced(function* (repo: Git.Repository) {
       const root = (yield* git.history.rootCommits(repo))[0]
@@ -121,11 +132,19 @@ const layer = Layer.effect(
       }
     })
 
+    const origin = Effect.fn("Project.origin")(function* (directory: AbsolutePath) {
+      const repository = yield* git.repo.discover(directory)
+      if (!repository) return undefined
+      const remote = yield* git.remote.get(repository)
+      const identity = remote ? normalizeOrigin(remote) : undefined
+      return { root: repository.worktree, identity }
+    })
+
     const commit = Effect.fn("Project.commit")(function* (input: { store: AbsolutePath; id: ID }) {
       yield* fs.writeFileString(path.join(input.store, "opencode"), input.id).pipe(Effect.ignore)
     })
 
-    return Service.of({ directories, resolve, commit })
+    return Service.of({ directories, resolve, origin, commit })
   }),
 )
 
