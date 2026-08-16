@@ -3,7 +3,7 @@ import { $ } from "bun"
 import fs from "fs/promises"
 import path from "path"
 import { Deferred, Effect, Fiber, Layer } from "effect"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { SessionControl } from "../../src/session/control"
 import { SessionControlState } from "../../src/session/control-state"
 import { SessionRunState } from "../../src/session/run-state"
@@ -27,7 +27,7 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionStore } from "@opencode-ai/core/session/store"
-import { SessionInputTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionContextEpochTable, SessionInputTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -67,6 +67,60 @@ const current = testEffect(
           resume: () => Effect.void,
           wake: () => Effect.void,
           interrupt: () => Effect.void,
+        }),
+      ),
+    ],
+  ]),
+)
+const currentReloadSessionID = SessionSchema.ID.make("ses_context_reload_current")
+const currentReload = testEffect(
+  AppNodeBuilder.build(services, [
+    [
+      SessionExecution.node,
+      Layer.effect(
+        SessionExecution.Service,
+        Effect.gen(function* () {
+          const active = new Set<SessionSchema.ID>([currentReloadSessionID])
+          return SessionExecution.Service.of({
+            active: Effect.sync(() => new Set(active)),
+            resume: () => Effect.void,
+            wake: () => Effect.void,
+            interrupt: (sessionID) => Effect.sync(() => void active.delete(sessionID)),
+          })
+        }),
+      ),
+    ],
+  ]),
+)
+const failingReloadSessionID = SessionSchema.ID.make("ses_context_reload_failed")
+const failingReload = testEffect(
+  AppNodeBuilder.build(services, [
+    [
+      SessionExecution.node,
+      Layer.succeed(
+        SessionExecution.Service,
+        SessionExecution.Service.of({
+          active: Effect.succeed(new Set([failingReloadSessionID])),
+          resume: () => Effect.void,
+          wake: () => Effect.void,
+          interrupt: () => Effect.die("interruption failed"),
+        }),
+      ),
+    ],
+  ]),
+)
+const timedOutReloadSessionID = SessionSchema.ID.make("ses_context_reload_timeout")
+const timedOutReload = testEffect(
+  AppNodeBuilder.build(services, [
+    [
+      SessionExecution.node,
+      Layer.succeed(
+        SessionExecution.Service,
+        SessionExecution.Service.of({
+          active: Effect.succeed(new Set([timedOutReloadSessionID])),
+          resume: () => Effect.void,
+          wake: () => Effect.void,
+          interrupt: () => Effect.never,
         }),
       ),
     ],
@@ -706,5 +760,362 @@ describe("SessionControl.changeDirectory", () => {
         ])
       }),
     { git: true },
+  )
+})
+
+describe("SessionControl.reloadContext", () => {
+  it.instance("resets only an idle selected session context epoch without changing its durable session", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const directory = AbsolutePath.make(test.directory)
+      const sessionID = SessionSchema.ID.make("ses_context_reload_idle")
+      const unrelated = SessionSchema.ID.make("ses_context_reload_unrelated")
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* db
+        .insert(SessionTable)
+        .values(
+          [sessionID, unrelated].map((id) => ({
+            id,
+            project_id: Project.ID.global,
+            slug: id,
+            directory,
+            title: id,
+            version: "test",
+          })),
+        )
+        .run()
+      yield* db
+        .insert(SessionContextEpochTable)
+        .values([sessionID, unrelated].map((id) => ({ session_id: id, baseline: id, snapshot: {}, baseline_seq: 0 })))
+        .run()
+
+      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID })
+
+      expect(result).toEqual({ type: "idle_complete" })
+      expect(yield* (yield* SessionStore.Service).get(sessionID)).toMatchObject({
+        id: sessionID,
+        projectID: Project.ID.global,
+        location: { directory },
+      })
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, sessionID))
+          .get(),
+      ).toBeUndefined()
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, unrelated))
+          .get(),
+      ).toMatchObject({ baseline: unrelated })
+    }),
+  )
+
+  currentReload.instance(
+    "waits for simultaneous current and legacy execution before deleting the selected context epoch",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { db } = yield* Database.Service
+        const directory = AbsolutePath.make(test.directory)
+        yield* db
+          .insert(ProjectTable)
+          .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+          .onConflictDoNothing()
+          .run()
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: currentReloadSessionID,
+            project_id: Project.ID.global,
+            slug: "current",
+            directory,
+            title: "current",
+            version: "test",
+          })
+          .run()
+        yield* db
+          .insert(SessionContextEpochTable)
+          .values({ session_id: currentReloadSessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
+          .run()
+        const gate = yield* Deferred.make<void>()
+        const run = yield* SessionRunState.Service
+        yield* run
+          .ensureRunning(
+            currentReloadSessionID,
+            Effect.succeed(undefined as never),
+            Deferred.await(gate).pipe(Effect.as(undefined as never)),
+          )
+          .pipe(Effect.forkScoped)
+        yield* pollWithTimeout(
+          run.active(currentReloadSessionID).pipe(Effect.map((active) => (active ? true : undefined))),
+          "legacy runner never became active",
+        )
+
+        const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: currentReloadSessionID })
+
+        expect(result).toEqual({ type: "interrupted_complete" })
+        expect(yield* run.active(currentReloadSessionID)).toBe(false)
+        expect(
+          yield* db
+            .select()
+            .from(SessionContextEpochTable)
+            .where(eq(SessionContextEpochTable.session_id, currentReloadSessionID))
+            .get(),
+        ).toBeUndefined()
+      }),
+  )
+
+  it.instance("interrupts legacy runner work before resetting the selected context epoch", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const directory = AbsolutePath.make(test.directory)
+      const sessionID = SessionSchema.ID.make("ses_context_reload_legacy")
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "legacy",
+          directory,
+          title: "legacy",
+          version: "test",
+        })
+        .run()
+      yield* db
+        .insert(SessionContextEpochTable)
+        .values({ session_id: sessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
+        .run()
+      const gate = yield* Deferred.make<void>()
+      const run = yield* SessionRunState.Service
+      yield* run
+        .ensureRunning(
+          sessionID,
+          Effect.succeed(undefined as never),
+          Deferred.await(gate).pipe(Effect.as(undefined as never)),
+        )
+        .pipe(Effect.forkScoped)
+      yield* pollWithTimeout(
+        run.active(sessionID).pipe(Effect.map((active) => (active ? true : undefined))),
+        "legacy runner never became active",
+      )
+
+      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID })
+
+      expect(result).toEqual({ type: "interrupted_complete" })
+      expect(yield* run.active(sessionID)).toBe(false)
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, sessionID))
+          .get(),
+      ).toBeUndefined()
+    }),
+  )
+
+  failingReload.instance("preserves the old epoch and reopens admission when interruption fails", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const directory = AbsolutePath.make(test.directory)
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: failingReloadSessionID,
+          project_id: Project.ID.global,
+          slug: "failed",
+          directory,
+          title: "failed",
+          version: "test",
+        })
+        .run()
+      yield* db
+        .insert(SessionContextEpochTable)
+        .values({ session_id: failingReloadSessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
+        .run()
+
+      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: failingReloadSessionID })
+
+      expect(result).toEqual({ type: "failed_before_reset" })
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, failingReloadSessionID))
+          .get(),
+      ).toMatchObject({ baseline: "old" })
+      const claim = yield* (yield* SessionAdmission.Service).claim({
+        sessionID: failingReloadSessionID,
+        instanceID: directory,
+      })
+      yield* claim.release
+    }),
+  )
+
+  timedOutReload.instance("preserves the old epoch and reopens admission when current interruption times out", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const directory = AbsolutePath.make(test.directory)
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: timedOutReloadSessionID,
+          project_id: Project.ID.global,
+          slug: "timeout",
+          directory,
+          title: "timeout",
+          version: "test",
+        })
+        .run()
+      yield* db
+        .insert(SessionContextEpochTable)
+        .values({ session_id: timedOutReloadSessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
+        .run()
+
+      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: timedOutReloadSessionID })
+
+      expect(result).toEqual({ type: "failed_before_reset" })
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, timedOutReloadSessionID))
+          .get(),
+      ).toMatchObject({ baseline: "old" })
+      const claim = yield* (yield* SessionAdmission.Service).claim({
+        sessionID: timedOutReloadSessionID,
+        instanceID: directory,
+      })
+      yield* claim.release
+    }),
+  )
+
+  it.instance("preserves the old epoch and reopens admission when reset fails", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const directory = AbsolutePath.make(test.directory)
+      const sessionID = SessionSchema.ID.make("ses_context_reload_reset_failure")
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "reset-failure",
+          directory,
+          title: "reset-failure",
+          version: "test",
+        })
+        .run()
+      yield* db
+        .insert(SessionContextEpochTable)
+        .values({ session_id: sessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
+        .run()
+      yield* db.run(sql`
+        CREATE TRIGGER fail_context_epoch_reset
+        BEFORE DELETE ON session_context_epoch
+        BEGIN
+          SELECT RAISE(ABORT, 'reset failed');
+        END
+      `)
+
+      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID })
+
+      expect(result).toEqual({ type: "failed_before_reset" })
+      expect(
+        yield* db
+          .select()
+          .from(SessionContextEpochTable)
+          .where(eq(SessionContextEpochTable.session_id, sessionID))
+          .get(),
+      ).toMatchObject({ baseline: "old" })
+      const claim = yield* (yield* SessionAdmission.Service).claim({ sessionID, instanceID: directory })
+      yield* claim.release
+    }),
+  )
+
+  race.instance("fences new session admission until the context epoch reset completes", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const directory = AbsolutePath.make(test.directory)
+      const sessionID = SessionSchema.ID.make("ses_context_reload_fence")
+      const entered = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      let waiting = true
+      beforeSnapshot = () => {
+        if (!waiting) return Effect.void
+        waiting = false
+        return Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+      }
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          beforeSnapshot = undefined
+        }),
+      )
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: sessionID,
+          project_id: Project.ID.global,
+          slug: "fence",
+          directory,
+          title: "fence",
+          version: "test",
+        })
+        .run()
+      yield* db
+        .insert(SessionContextEpochTable)
+        .values({ session_id: sessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
+        .run()
+      const reloading = yield* (yield* SessionControl.Service).reloadContext({ sessionID }).pipe(Effect.forkScoped)
+      yield* Deferred.await(entered)
+
+      const blocked = yield* (yield* SessionAdmission.Service)
+        .claim({ sessionID, instanceID: directory })
+        .pipe(Effect.exit)
+
+      expect(blocked).toMatchObject({ _tag: "Failure" })
+      yield* Deferred.succeed(release, undefined)
+      expect(yield* Fiber.join(reloading)).toEqual({ type: "idle_complete" })
+      const claim = yield* (yield* SessionAdmission.Service).claim({ sessionID, instanceID: directory })
+      yield* claim.release
+    }),
   )
 })

@@ -9,12 +9,15 @@ import { ProjectDirectories } from "@opencode-ai/core/project/directories"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionAdmission } from "@opencode-ai/core/session/admission"
+import { SessionContextEpoch } from "@opencode-ai/core/session/context-epoch"
+import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionInputTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { and, eq, isNull, sql } from "drizzle-orm"
-import { Context, Effect, Layer, Schema } from "effect"
+import { Context, Effect, Exit, Layer, Option, Schema } from "effect"
 import { SessionControlState } from "./control-state"
+import { SessionRunState } from "./run-state"
 
 /** A request to change one selected session's durable directory without changing either worktree. */
 export const ChangeDirectoryInput = Schema.Struct({
@@ -23,6 +26,12 @@ export const ChangeDirectoryInput = Schema.Struct({
   destination: AbsolutePath,
 }).annotate({ identifier: "SessionControl.ChangeDirectoryInput" })
 export type ChangeDirectoryInput = typeof ChangeDirectoryInput.Type
+
+/** Identifies the selected session whose cached location-derived context must be discarded. */
+export const ReloadContextInput = Schema.Struct({
+  sessionID: SessionSchema.ID,
+}).annotate({ identifier: "SessionControl.ReloadContextInput" })
+export type ReloadContextInput = typeof ReloadContextInput.Type
 
 /** A stable refusal category that intentionally exposes no prompt or interaction content. */
 export const Refusal = Schema.Literals([
@@ -49,16 +58,31 @@ export type ChangeDirectoryResult =
   | { readonly type: "precommit_failed" }
 
 /**
- * Changes one selected session's durable directory under the session admission lease.
- * It checks stale source, shared blockers, and destination identity before the Core transaction; it never performs a
- * filesystem-changing Git operation. A completed result is authoritative at SQLite commit, while callers own notification
- * and exact-read reconciliation after this service returns.
+ * The outcome of an explicit selected-session context reload.
+ * Completed results confirm that admission reopened after the selected epoch was deleted; failures preserve the old
+ * epoch, while `recovery_uncertain` is reserved for a future admission implementation that cannot confirm restoration.
+ */
+export type ReloadContextResult =
+  | { readonly type: "idle_complete" }
+  | { readonly type: "interrupted_complete" }
+  | { readonly type: "failed_before_reset" }
+  | { readonly type: "recovery_uncertain" }
+
+/**
+ * Provides server-owned selected-session directory and context controls under the session admission lease.
+ * Directory changes validate shared blockers and destination identity without changing either worktree. Context reloads
+ * quiesce both execution systems before resetting one cached epoch. Callers own client-side reconciliation.
  */
 export interface Interface {
   readonly changeDirectory: (input: ChangeDirectoryInput) => Effect.Effect<ChangeDirectoryResult>
+  /**
+   * Fences one session, interrupts current and legacy execution, and resets only its cached context epoch.
+   * It never persists a prompt or message, changes session identity or location, or reloads the project instance.
+   */
+  readonly reloadContext: (input: ReloadContextInput) => Effect.Effect<ReloadContextResult>
 }
 
-/** Provides server-owned blocker policy and destination validation for directory controls. */
+/** Provides server-owned blocker, quiescence, and mutation policy for selected-session controls. */
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionControl") {}
 
 const layer = Layer.effect(
@@ -72,6 +96,8 @@ const layer = Layer.effect(
     const sessions = yield* SessionStore.Service
     const change = yield* ChangeSessionDirectory.Service
     const controlState = yield* SessionControlState.Service
+    const execution = yield* SessionExecution.Service
+    const runState = yield* SessionRunState.Service
 
     const changeDirectory = Effect.fn("SessionControl.changeDirectory")(function* (input: ChangeDirectoryInput) {
       const initial = yield* sessions.get(input.sessionID)
@@ -147,7 +173,47 @@ const layer = Layer.effect(
           Effect.catch(() => Effect.succeed({ type: "precommit_failed" as const })),
         )
     })
-    return Service.of({ changeDirectory })
+    const reloadContext = Effect.fn("SessionControl.reloadContext")(function* (input: ReloadContextInput) {
+      const initial = yield* sessions.get(input.sessionID)
+      if (!initial) return { type: "failed_before_reset" as const }
+      return yield* admission
+        .withSessionControl(
+          { sessionID: input.sessionID, instanceID: initial.location.directory },
+          Effect.gen(function* () {
+            const current = yield* sessions.get(input.sessionID)
+            if (!current) return { type: "failed_before_reset" as const }
+            const active = yield* controlState.snapshot({
+              sessionID: input.sessionID,
+              instanceID: current.location.directory,
+              pendingInputs: { steer: 0, queue: 0 },
+            })
+            const interrupted = active.activity !== "idle" || active.backgroundJobs !== 0
+            const stops = yield* Effect.all([
+              execution.interrupt(input.sessionID).pipe(Effect.exit, Effect.timeoutOption("5 seconds")),
+              runState.cancel(input.sessionID).pipe(Effect.exit, Effect.timeoutOption("5 seconds")),
+            ])
+            if (stops.some(Option.isNone) || stops.some((stop) => stop._tag === "Some" && Exit.isFailure(stop.value))) {
+              return { type: "failed_before_reset" as const }
+            }
+            const quiesced = yield* controlState
+              .awaitQuiescent({ sessionID: input.sessionID, instanceID: current.location.directory })
+              .pipe(Effect.timeoutOption("5 seconds"))
+            if (Option.isNone(quiesced)) {
+              return { type: "failed_before_reset" as const }
+            }
+            const reset = yield* SessionContextEpoch.reset(db, input.sessionID).pipe(Effect.exit)
+            if (Exit.isFailure(reset)) return { type: "failed_before_reset" as const }
+            return { type: interrupted ? ("interrupted_complete" as const) : ("idle_complete" as const) }
+          }),
+        )
+        .pipe(
+          Effect.catchTag("SessionAdmission.ControlInProgressError", () =>
+            Effect.succeed({ type: "failed_before_reset" as const }),
+          ),
+          Effect.catch(() => Effect.succeed({ type: "recovery_uncertain" as const })),
+        )
+    })
+    return Service.of({ changeDirectory, reloadContext })
   }),
 )
 
@@ -163,6 +229,8 @@ export const node = LayerNode.make({
     ProjectV2.node,
     SessionAdmission.node,
     SessionControlState.node,
+    SessionExecution.node,
+    SessionRunState.node,
     SessionStore.node,
   ],
 })

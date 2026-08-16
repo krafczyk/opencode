@@ -108,6 +108,7 @@ const find = Effect.fn("SessionContextEpoch.find")(function* (db: DatabaseServic
     .pipe(Effect.orDie)
 })
 
+/** Deletes one session's cached context epoch so its next runner turn initializes a fresh location-derived baseline. */
 export const reset = Effect.fn("SessionContextEpoch.reset")(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
