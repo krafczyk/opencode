@@ -5,6 +5,7 @@ import { Api } from "../api"
 import { SessionsCursor } from "@opencode-ai/protocol/groups/session"
 import {
   ConflictError,
+  InvalidRequestError,
   InvalidCursorError,
   MessageNotFoundError,
   ServiceUnavailableError,
@@ -156,6 +157,10 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                       message: `Session not found: ${error.sessionID}`,
                     }),
                   ),
+                ),
+                Effect.catchTag(
+                  "SessionAdmission.ControlInProgressError",
+                  () => new InvalidRequestError({ message: "Session control in progress", kind: "request" }),
                 ),
                 Effect.catchTag("Session.PromptConflictError", (error) =>
                   Effect.fail(

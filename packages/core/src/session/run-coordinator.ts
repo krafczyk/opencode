@@ -6,8 +6,8 @@ import { Deferred, Effect, Exit, Fiber, FiberSet, Scope } from "effect"
 export interface Coordinator<Key, E> {
   /** Snapshots keys with an execution owned by this coordinator. */
   readonly active: Effect.Effect<ReadonlySet<Key>>
-  /** Starts execution while idle or joins the active execution. */
-  readonly run: (key: Key) => Effect.Effect<void, E>
+  /** Starts execution while idle or joins the active execution, running `handoff` after ownership is visible. */
+  readonly run: (key: Key, handoff?: Effect.Effect<void>) => Effect.Effect<void, E>
   /** Registers one coalesced follow-up after newly recorded work. */
   readonly wake: (key: Key) => Effect.Effect<void>
   /** Stops active execution and waits for its cleanup. */
@@ -16,6 +16,7 @@ export interface Coordinator<Key, E> {
 
 type Entry<E> = {
   readonly done: Deferred.Deferred<void, E>
+  readonly settled: Deferred.Deferred<Exit.Exit<void, E>>
   owner?: Fiber.Fiber<void, never>
   pendingWake: boolean
   stopping: boolean
@@ -30,11 +31,12 @@ export const make = <Key, E>(options: {
 
     const makeEntry = (): Entry<E> => ({
       done: Deferred.makeUnsafe<void, E>(),
+      settled: Deferred.makeUnsafe<Exit.Exit<void, E>>(),
       pendingWake: false,
       stopping: false,
     })
 
-    const start = (key: Key, entry: Entry<E>, force: boolean, successor = false) => {
+    const start = (key: Key, entry: Entry<E>, force: boolean, successor = false, paused = false) => {
       const ready = Deferred.makeUnsafe<void>()
       const owner = fork(
         (successor ? Effect.yieldNow : Deferred.await(ready)).pipe(
@@ -45,7 +47,8 @@ export const make = <Key, E>(options: {
         ),
       )
       entry.owner = owner
-      if (!successor) Deferred.doneUnsafe(ready, Effect.void)
+      if (!successor && !paused) Deferred.doneUnsafe(ready, Effect.void)
+      return Effect.sync(() => Deferred.doneUnsafe(ready, Effect.void))
     }
 
     const settle = (key: Key, entry: Entry<E>, exit: Exit.Exit<void, E>) => {
@@ -61,21 +64,23 @@ export const make = <Key, E>(options: {
         active.set(key, successor)
         start(key, successor, false, true)
       }
+      Deferred.doneUnsafe(entry.settled, Effect.succeed(exit))
       Deferred.doneUnsafe(entry.done, exit)
     }
 
-    const run = (key: Key): Effect.Effect<void, E> =>
+    const run = (key: Key, handoff = Effect.void): Effect.Effect<void, E> =>
       Effect.uninterruptibleMask((restore) => {
         const entry = active.get(key)
         if (entry !== undefined) {
-          if (entry.stopping) return restore(Deferred.await(entry.done).pipe(Effect.andThen(run(key))))
-          return restore(Deferred.await(entry.done))
+          if (entry.stopping)
+            return restore(Deferred.await(entry.settled).pipe(Effect.andThen(() => run(key, handoff))))
+          return restore(handoff.pipe(Effect.andThen(Deferred.await(entry.done))))
         }
 
         const next = makeEntry()
         active.set(key, next)
-        start(key, next, true)
-        return restore(Deferred.await(next.done))
+        const open = start(key, next, true, false, true)
+        return restore(handoff.pipe(Effect.ensuring(open), Effect.andThen(Deferred.await(next.done))))
       })
 
     const wake = (key: Key) =>

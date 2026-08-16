@@ -37,6 +37,7 @@ import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
 import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+import { SessionAdmission } from "./session/admission"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -108,7 +109,12 @@ export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictE
 export const MessageNotFoundError = SessionRevert.MessageNotFoundError
 export type MessageNotFoundError = SessionRevert.MessageNotFoundError
 
-export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
+export type Error =
+  | NotFoundError
+  | MessageDecodeError
+  | OperationUnavailableError
+  | PromptConflictError
+  | SessionAdmission.ControlInProgressError
 
 export interface Interface {
   readonly list: (input?: ListInput) => Effect.Effect<SessionSchema.Info[]>
@@ -144,13 +150,17 @@ export interface Interface {
     sessionID: SessionSchema.ID
     model: ModelV2.Ref
   }) => Effect.Effect<void, NotFoundError>
+  /** Admits durable prompt input and schedules execution unless admission is fenced by a control. */
   readonly prompt: (input: {
     id?: SessionMessage.ID
     sessionID: SessionSchema.ID
     prompt: PromptInput.Prompt
     delivery?: SessionInput.Delivery
     resume?: boolean
-  }) => Effect.Effect<SessionInput.Admitted, NotFoundError | PromptConflictError>
+  }) => Effect.Effect<
+    SessionInput.Admitted,
+    NotFoundError | PromptConflictError | SessionAdmission.ControlInProgressError
+  >
   readonly shell: (input: {
     id?: EventV2.ID
     sessionID: SessionSchema.ID
@@ -166,7 +176,10 @@ export interface Interface {
   readonly compact: (input: CompactInput) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
   readonly wait: (id: SessionSchema.ID) => Effect.Effect<void, NotFoundError | OperationUnavailableError>
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
-  readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
+  /** Starts or joins execution unless a session or instance control fence refuses admission. */
+  readonly resume: (
+    sessionID: SessionSchema.ID,
+  ) => Effect.Effect<void, NotFoundError | SessionRunner.RunError | SessionAdmission.ControlInProgressError>
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
   readonly revert: {
     readonly stage: (input: {
@@ -191,6 +204,7 @@ const layer = Layer.effect(
     const execution = yield* SessionExecution.Service
     const store = yield* SessionStore.Service
     const locations = yield* LocationServiceMap.Service
+    const admission = yield* SessionAdmission.Service
     const decodeMessage = Schema.decodeUnknownEffect(SessionMessage.Message)
     const isDurableSessionEvent = Schema.is(SessionEvent.Durable)
     const decode = (row: typeof SessionMessageTable.$inferSelect) =>
@@ -204,7 +218,7 @@ const layer = Layer.effect(
         ),
       )
 
-    const result = Service.of({
+    const result: Interface = Service.of({
       create: Effect.fn("V2Session.create")(function* (input) {
         const sessionID = input.id ?? SessionSchema.ID.create()
         const recorded = yield* store.get(sessionID)
@@ -360,27 +374,32 @@ const layer = Layer.effect(
       prompt: Effect.fn("V2Session.prompt")((input) =>
         Effect.uninterruptible(
           Effect.gen(function* () {
-            yield* result.get(input.sessionID)
-            const prompt = resolvePrompt(input.prompt)
-            const messageID = input.id ?? SessionMessage.ID.create()
-            const delivery = input.delivery ?? "steer"
-            const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
-            const admitted = yield* SessionInput.admit(db, events, {
-              id: messageID,
-              sessionID: input.sessionID,
-              prompt,
-              delivery,
-            }).pipe(
-              Effect.catchDefect((defect) =>
-                defect instanceof SessionInput.LifecycleConflict
-                  ? new PromptConflictError({ sessionID: input.sessionID, messageID })
-                  : Effect.die(defect),
-              ),
+            const recorded = yield* result.get(input.sessionID)
+            return yield* admission.withClaim(
+              { sessionID: input.sessionID, instanceID: recorded.location.directory },
+              Effect.gen(function* () {
+                const prompt = resolvePrompt(input.prompt)
+                const messageID = input.id ?? SessionMessage.ID.create()
+                const delivery = input.delivery ?? "steer"
+                const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
+                const admitted = yield* SessionInput.admit(db, events, {
+                  id: messageID,
+                  sessionID: input.sessionID,
+                  prompt,
+                  delivery,
+                }).pipe(
+                  Effect.catchDefect((defect) =>
+                    defect instanceof SessionInput.LifecycleConflict
+                      ? new PromptConflictError({ sessionID: input.sessionID, messageID })
+                      : Effect.die(defect),
+                  ),
+                )
+                if (!SessionInput.equivalent(admitted, expected))
+                  return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
+                if (input.resume !== false) yield* execution.wake(admitted.sessionID)
+                return admitted
+              }),
             )
-            if (!SessionInput.equivalent(admitted, expected))
-              return yield* new PromptConflictError({ sessionID: input.sessionID, messageID })
-            if (input.resume !== false) yield* execution.wake(admitted.sessionID)
-            return admitted
           }),
         ),
       ),
@@ -424,8 +443,12 @@ const layer = Layer.effect(
       }),
       active: execution.active,
       resume: Effect.fn("V2Session.resume")(function* (sessionID) {
-        yield* result.get(sessionID)
-        yield* execution.resume(sessionID)
+        const session = yield* result.get(sessionID)
+        yield* Effect.acquireUseRelease(
+          admission.claim({ sessionID, instanceID: session.location.directory }),
+          (claim) => execution.resume(sessionID, claim.release),
+          (claim) => Effect.uninterruptible(claim.release),
+        )
       }),
       interrupt: Effect.fn("V2Session.interrupt")((sessionID) =>
         Effect.uninterruptible(execution.interrupt(sessionID)),
@@ -482,5 +505,6 @@ export const node = makeGlobalNode({
     SessionStore.node,
     LocationServiceMap.node,
     SessionProjector.node,
+    SessionAdmission.node,
   ],
 })

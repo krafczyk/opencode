@@ -113,6 +113,53 @@ describe("Runner", () => {
     }),
   )
 
+  it.live(
+    "handoff sees immediate and joined run ownership",
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const runner = Runner.make<string>(s)
+      const gate = yield* Deferred.make<void>()
+      const immediate = yield* Deferred.make<Runner.State<string, never>["_tag"]>()
+      const joined = yield* Deferred.make<Runner.State<string, never>["_tag"]>()
+
+      const first = yield* runner
+        .ensureRunning(
+          Deferred.await(gate).pipe(Effect.as("result")),
+          Effect.sync(() => Deferred.doneUnsafe(immediate, Effect.succeed(runner.state._tag))),
+        )
+        .pipe(Effect.forkChild)
+      expect(yield* Deferred.await(immediate)).toBe("Running")
+
+      const second = yield* runner
+        .ensureRunning(
+          Effect.succeed("ignored"),
+          Effect.sync(() => Deferred.doneUnsafe(joined, Effect.succeed(runner.state._tag))),
+        )
+        .pipe(Effect.forkChild)
+      expect(yield* Deferred.await(joined)).toBe("Running")
+
+      yield* Deferred.succeed(gate, void 0)
+      yield* Fiber.join(first)
+      yield* Fiber.join(second)
+    }),
+  )
+
+  it.live("handoff runs when a visible run fails", () =>
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const runner = Runner.make<string, string>(s)
+      const handedOff = yield* Deferred.make<void>()
+
+      const exit = yield* runner
+        .ensureRunning(Effect.fail("failed"), Deferred.succeed(handedOff, void 0))
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(yield* Deferred.isDone(handedOff)).toBe(true)
+      expect(runner.state._tag).toBe("Idle")
+    }),
+  )
+
   // --- cancel semantics ---
 
   it.live(
@@ -407,6 +454,38 @@ describe("Runner", () => {
       expect(Exit.isSuccess(exitA)).toBe(true)
       expect(Exit.isSuccess(exitB)).toBe(true)
       expect(yield* Ref.get(calls)).toBe(1)
+    }),
+  )
+
+  it.live("handoff sees queued run and shell ownership without leaking on cancellation", () =>
+    Effect.gen(function* () {
+      const s = yield* Scope.Scope
+      const runner = Runner.make<string>(s)
+      const gate = yield* Deferred.make<void>()
+      const shellHandoff = yield* Deferred.make<Runner.State<string, never>["_tag"]>()
+      const runHandoff = yield* Deferred.make<Runner.State<string, never>["_tag"]>()
+
+      const shell = yield* runner
+        .startShell(
+          Deferred.await(gate).pipe(Effect.as("shell")),
+          undefined,
+          Effect.sync(() => Deferred.doneUnsafe(shellHandoff, Effect.succeed(runner.state._tag))),
+        )
+        .pipe(Effect.forkChild)
+      expect(yield* Deferred.await(shellHandoff)).toBe("Shell")
+
+      const run = yield* runner
+        .ensureRunning(
+          Effect.succeed("run"),
+          Effect.sync(() => Deferred.doneUnsafe(runHandoff, Effect.succeed(runner.state._tag))),
+        )
+        .pipe(Effect.forkChild)
+      expect(yield* Deferred.await(runHandoff)).toBe("ShellThenRun")
+
+      yield* runner.cancel
+      expect(Exit.isFailure(yield* Fiber.await(shell))).toBe(true)
+      expect(Exit.isFailure(yield* Fiber.await(run))).toBe(true)
+      expect(runner.state._tag).toBe("Idle")
     }),
   )
 

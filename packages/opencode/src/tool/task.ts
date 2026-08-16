@@ -281,6 +281,7 @@ export const TaskTool = Tool.define(
         }
       }
 
+      // The parent runner remains visible until this tool returns; completion re-enters prompt admission.
       const info = yield* background.start({
         id: nextSession.id,
         type: id,

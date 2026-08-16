@@ -41,6 +41,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { Skill } from "../../src/skill"
 import { SystemPrompt } from "../../src/session/system"
 import { Shell } from "@opencode-ai/core/shell"
@@ -206,6 +207,7 @@ const promptRoot = LayerNode.group([
   SystemPrompt.node,
   CrossSpawnSpawner.node,
   RuntimeFlags.node,
+  SessionAdmission.node,
 ])
 
 function makePrompt(input?: { mcpInstructions?: MCP.ServerInstructions[]; processor?: "blocking" }) {
@@ -625,6 +627,30 @@ it.instance("legacy prompt emits message events without session.next events", ()
     expect(seen).toContain(MessageV2.Event.Updated.type)
     expect(seen).toContain(MessageV2.Event.PartUpdated.type)
     expect(seen.filter((type) => type.startsWith("session.next."))).toEqual([])
+  }),
+)
+
+noLLMServer.instance("legacy prompt refuses a session control fence before persisting a user message", () =>
+  Effect.gen(function* () {
+    const admission = yield* SessionAdmission.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Admission fence" })
+
+    const failure = yield* admission.withSessionControl(
+      { sessionID: chat.id, instanceID: chat.directory },
+      prompt
+        .prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "must not persist" }],
+        })
+        .pipe(Effect.flip),
+    )
+
+    expect(failure).toMatchObject({ _tag: "SessionAdmission.ControlInProgressError", sessionID: chat.id })
+    expect(yield* sessions.messages({ sessionID: chat.id })).toEqual([])
   }),
 )
 

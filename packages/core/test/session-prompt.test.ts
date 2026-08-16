@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { DateTime, Effect, Fiber, Layer, Stream } from "effect"
+import { DateTime, Deferred, Effect, Fiber, Layer, Stream } from "effect"
 import { eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -16,6 +16,7 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionInput } from "@opencode-ai/core/session/input"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { testEffect } from "./lib/effect"
@@ -24,14 +25,19 @@ const executionCalls: SessionV2.ID[] = []
 const interruptCalls: SessionV2.ID[] = []
 const wakeCalls: SessionV2.ID[] = []
 const activeSessions = new Set<SessionV2.ID>()
+let ownershipVisibleBeforeHandoff = false
+const defaultResume: SessionExecution.Interface["resume"] = (sessionID, handoff = Effect.void) =>
+  Effect.sync(() => {
+    executionCalls.push(sessionID)
+    activeSessions.add(sessionID)
+    ownershipVisibleBeforeHandoff = activeSessions.has(sessionID)
+  }).pipe(Effect.andThen(handoff), Effect.ensuring(Effect.sync(() => activeSessions.delete(sessionID))))
+let resumeImplementation: SessionExecution.Interface["resume"] = defaultResume
 const execution = Layer.succeed(
   SessionExecution.Service,
   SessionExecution.Service.of({
     active: Effect.sync(() => new Set(activeSessions)),
-    resume: (sessionID) =>
-      Effect.sync(() => {
-        executionCalls.push(sessionID)
-      }),
+    resume: (sessionID, handoff) => resumeImplementation(sessionID, handoff),
     interrupt: (sessionID) =>
       Effect.sync(() => {
         interruptCalls.push(sessionID)
@@ -44,7 +50,14 @@ const execution = Layer.succeed(
 )
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, EventV2.node, SessionProjector.node, SessionStore.node, SessionV2.node]),
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      SessionProjector.node,
+      SessionStore.node,
+      SessionAdmission.node,
+      SessionV2.node,
+    ]),
     [[SessionExecution.node, execution]],
   ),
 )
@@ -52,6 +65,8 @@ const sessionID = SessionV2.ID.make("ses_prompt_test")
 const messageID = SessionMessage.ID.create()
 
 const setup = Effect.gen(function* () {
+  resumeImplementation = defaultResume
+  ownershipVisibleBeforeHandoff = false
   const { db } = yield* Database.Service
   yield* db
     .insert(ProjectTable)
@@ -118,6 +133,40 @@ describe("SessionV2.prompt", () => {
     }),
   )
 
+  it.effect("releases resume admission only after execution exposes ownership", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const admission = yield* SessionAdmission.Service
+
+      yield* session.resume(sessionID)
+
+      expect(ownershipVisibleBeforeHandoff).toBe(true)
+      expect((yield* admission.snapshot).claims).toEqual([])
+    }),
+  )
+
+  it.effect("releases resume admission when execution fails or is cancelled before handoff", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const admission = yield* SessionAdmission.Service
+      resumeImplementation = () => Effect.die("resume failed")
+
+      yield* session.resume(sessionID).pipe(Effect.exit)
+      expect((yield* admission.snapshot).claims).toEqual([])
+
+      const started = yield* Deferred.make<void>()
+      resumeImplementation = () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never))
+      const resume = yield* session.resume(sessionID).pipe(Effect.forkChild)
+      yield* Deferred.await(started)
+      expect((yield* admission.snapshot).claims).toEqual([{ sessionID, instanceID: "/project" }])
+
+      yield* Fiber.interrupt(resume)
+      expect((yield* admission.snapshot).claims).toEqual([])
+    }),
+  )
+
   it.effect("delegates process-local interruption through SessionExecution", () =>
     Effect.gen(function* () {
       yield* setup
@@ -159,6 +208,54 @@ describe("SessionV2.prompt", () => {
         prompt: { text: "Fix the failing tests" },
         delivery: "steer",
       })
+    }),
+  )
+
+  it.effect("refuses a fenced prompt before durable admission or wake registration", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const admission = yield* SessionAdmission.Service
+      wakeCalls.length = 0
+
+      const failure = yield* admission.withSessionControl(
+        { sessionID, instanceID: "/project" },
+        session.prompt({ sessionID, prompt: Prompt.make({ text: "Fenced work" }) }).pipe(Effect.flip),
+      )
+
+      expect(failure).toMatchObject({ _tag: "SessionAdmission.ControlInProgressError", sessionID })
+      expect(yield* admittedCount).toBe(0)
+      expect(wakeCalls).toEqual([])
+    }),
+  )
+
+  it.effect("refuses resume during session or instance control before execution", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const admission = yield* SessionAdmission.Service
+      executionCalls.length = 0
+
+      const sessionFailure = yield* admission.withSessionControl(
+        { sessionID, instanceID: "/project" },
+        session.resume(sessionID).pipe(Effect.flip),
+      )
+      const instanceFailure = yield* admission.withInstanceControl(
+        "/project",
+        session.resume(sessionID).pipe(Effect.flip),
+      )
+
+      expect(sessionFailure).toMatchObject({
+        _tag: "SessionAdmission.ControlInProgressError",
+        scope: "session",
+        sessionID,
+      })
+      expect(instanceFailure).toMatchObject({
+        _tag: "SessionAdmission.ControlInProgressError",
+        scope: "instance",
+        sessionID,
+      })
+      expect(executionCalls).toEqual([])
     }),
   )
 

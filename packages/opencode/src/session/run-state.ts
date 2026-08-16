@@ -11,16 +11,20 @@ import { SessionStatus } from "./status"
 export interface Interface {
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
+  /** Starts or joins legacy work and invokes `handoff` after runner ownership is visible. */
   readonly ensureRunning: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
+    handoff?: Effect.Effect<void>,
   ) => Effect.Effect<SessionV1.WithParts>
+  /** Starts shell work and invokes `handoff` after runner ownership is visible. */
   readonly startShell: (
     sessionID: SessionID,
     onInterrupt: Effect.Effect<SessionV1.WithParts>,
     work: Effect.Effect<SessionV1.WithParts>,
     ready?: Latch.Latch,
+    handoff?: Effect.Effect<void>,
   ) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
 }
 
@@ -89,8 +93,9 @@ const layer = Layer.effect(
       sessionID: SessionID,
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
+      handoff?: Effect.Effect<void>,
     ) {
-      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work)
+      return yield* (yield* runner(sessionID, onInterrupt)).ensureRunning(work, handoff)
     })
 
     const startShell = Effect.fn("SessionRunState.startShell")(function* (
@@ -98,9 +103,10 @@ const layer = Layer.effect(
       onInterrupt: Effect.Effect<SessionV1.WithParts>,
       work: Effect.Effect<SessionV1.WithParts>,
       ready?: Latch.Latch,
+      handoff?: Effect.Effect<void>,
     ) {
       return yield* (yield* runner(sessionID, onInterrupt))
-        .startShell(work, ready)
+        .startShell(work, ready, handoff)
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
