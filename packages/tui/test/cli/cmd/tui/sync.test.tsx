@@ -99,4 +99,54 @@ describe("tui sync", () => {
       app.renderer.destroy()
     }
   })
+
+  test("forced reconciliation follows an older in-flight hydration with an authoritative read", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    const sessionID = "ses_control_race"
+    let gets = 0
+    let release: (() => void) | undefined
+    const first = new Promise<Response>((resolve) => {
+      release = () =>
+        resolve(
+          json({
+            id: sessionID,
+            title: "source",
+            time: { created: 0, updated: 0 },
+            version: "1.18.18",
+            directory: "/tmp/opencode/source",
+          }),
+        )
+    })
+    const { app, sync } = await mount((url) => {
+      if (url.pathname === `/session/${sessionID}`) {
+        gets += 1
+        if (gets === 1) return first
+        return json({
+          id: sessionID,
+          title: "destination",
+          time: { created: 0, updated: 0 },
+          version: "1.18.18",
+          directory: "/tmp/opencode/destination",
+        })
+      }
+      if ([`/session/${sessionID}/message`, `/session/${sessionID}/todo`, `/session/${sessionID}/diff`].includes(url.pathname)) {
+        return json([])
+      }
+      return undefined
+    }, tmp.path)
+
+    try {
+      const ordinary = sync.session.sync(sessionID)
+      await wait(() => gets === 1)
+      const forced = sync.session.reconcile(sessionID)
+      release!()
+
+      await ordinary
+      await expect(forced).resolves.toMatchObject({ directory: "/tmp/opencode/destination" })
+      expect(gets).toBe(2)
+    } finally {
+      app.renderer.destroy()
+    }
+  })
 })

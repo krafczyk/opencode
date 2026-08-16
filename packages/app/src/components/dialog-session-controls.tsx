@@ -3,35 +3,59 @@ import { Dialog } from "@opencode-ai/ui/dialog"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Show, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
+import { useNavigate } from "@solidjs/router"
 import { useLanguage } from "@/context/language"
 import { useSDK } from "@/context/sdk"
-import { useServerSDK } from "@/context/server-sdk"
 import { useSync } from "@/context/sync"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { createSessionOwnership } from "@/pages/session/session-ownership"
 import { showToast } from "@/utils/toast"
-import type { SessionInspectionSnapshot } from "@opencode-ai/sdk/v2/client"
+import { legacySessionHref } from "@/utils/session-route"
+import type {
+  ProjectControlGuardedReloadOutcome,
+  SessionControlChangeDirectoryOutcome,
+  SessionControlReloadContextOutcome,
+  SessionInspectionSnapshot,
+} from "@opencode-ai/sdk/v2/client"
+
+const feedback = {
+  reload: {
+    refused: "reload.refused",
+    completed: "reload.completed",
+    recovery_failed: "reload.recovery_failed",
+    uncertain: "reload.uncertain",
+  },
+  directory: {
+    noop: "directory.noop",
+    refused: "directory.refused",
+    completed: "directory.completed",
+    precommit_failed: "directory.precommit_failed",
+  },
+  context: {
+    idle_complete: "context.idle_complete",
+    interrupted_complete: "context.interrupted_complete",
+    failed_before_reset: "context.failed_before_reset",
+    recovery_uncertain: "context.recovery_uncertain",
+  },
+} as const
 
 type Feedback =
-  | "reload.refused"
-  | "reload.completed"
-  | "reload.recovery_failed"
-  | "reload.uncertain"
+  | (typeof feedback.reload)[keyof typeof feedback.reload]
+  | (typeof feedback.directory)[keyof typeof feedback.directory]
+  | (typeof feedback.context)[keyof typeof feedback.context]
   | "reload.reconciliation_failed"
-  | "directory.noop"
-  | "directory.refused"
-  | "directory.precommit_failed"
-  | "directory.completed"
   | "directory.reconciliation_failed"
-  | "context.idle_complete"
-  | "context.interrupted_complete"
-  | "context.failed_before_reset"
-  | "context.recovery_uncertain"
+  | "context.reconciliation_failed"
 
-export function sessionControlFeedback(input: { action: "reload" | "directory" | "context"; type: string }): Feedback {
-  if (input.action === "reload") return `reload.${input.type}` as Extract<Feedback, `reload.${string}`>
-  if (input.action === "directory") return `directory.${input.type}` as Extract<Feedback, `directory.${string}`>
-  return `context.${input.type}` as Extract<Feedback, `context.${string}`>
+type FeedbackInput =
+  | { action: "reload"; type: ProjectControlGuardedReloadOutcome["type"] }
+  | { action: "directory"; type: SessionControlChangeDirectoryOutcome["type"] }
+  | { action: "context"; type: SessionControlReloadContextOutcome["type"] }
+
+export function sessionControlFeedback(input: FeedbackInput): Feedback {
+  if (input.action === "reload") return feedback.reload[input.type]
+  if (input.action === "directory") return feedback.directory[input.type]
+  return feedback.context[input.type]
 }
 
 export function sessionLocationKey(value: SessionInspectionSnapshot["location"]["classification"]) {
@@ -42,11 +66,27 @@ export function sessionActivityKey(value: SessionInspectionSnapshot["control"]["
   return `session.controls.activity.${value}` as const
 }
 
+/** Runs one control mutation and, only for outcomes that changed server state, attempts exact client reconciliation. */
+export async function runReconciledControl<T>(input: {
+  mutate: () => Promise<T>
+  reconcileWhen: (outcome: T) => boolean
+  reconcile: () => Promise<void>
+}) {
+  const outcome = await input.mutate()
+  if (!input.reconcileWhen(outcome)) return { outcome, reconciled: true }
+  try {
+    await input.reconcile()
+    return { outcome, reconciled: true }
+  } catch {
+    return { outcome, reconciled: false }
+  }
+}
+
 export function DialogSessionControls() {
   const dialog = useDialog()
+  const navigate = useNavigate()
   const language = useLanguage()
   const sdk = useSDK()
-  const serverSDK = useServerSDK()
   const sync = useSync()
   const { params, sessionKey } = useSessionKey()
   const ownership = createSessionOwnership(sessionKey)
@@ -56,6 +96,7 @@ export function DialogSessionControls() {
     directory: "",
     inspection: undefined as SessionInspectionSnapshot | undefined,
   })
+  let inspectionGeneration = 0
 
   const capture = () => {
     const sessionID = params.id
@@ -65,17 +106,16 @@ export function DialogSessionControls() {
     return {
       client: sdk().client,
       directory: session.directory,
-      expectedSource: session.directory,
       owner: ownership.capture(),
-      scope: serverSDK().scope,
+      serverKey: params.serverKey,
       sessionID,
       sync: sync(),
     }
   }
 
-  const inspect = async () => {
-    const request = capture()
+  const inspect = async (request = capture()) => {
     if (!request) return
+    const generation = ++inspectionGeneration
     setState("loading", true)
     try {
       const result = await request.client.session.inspection({
@@ -83,23 +123,17 @@ export function DialogSessionControls() {
         directory: request.directory,
       })
       if (!result.data) throw new Error("Missing session inspection")
+      if (generation !== inspectionGeneration) return
       request.owner.run(() => {
         setState("inspection", result.data)
         setState("directory", result.data.session.directory)
       })
     } catch {
+      if (generation !== inspectionGeneration) return
       request.owner.run(() => showToast({ variant: "error", title: language.t("common.requestFailed") }))
     } finally {
+      if (generation !== inspectionGeneration) return
       request.owner.run(() => setState("loading", false))
-    }
-  }
-
-  const refresh = async (request: NonNullable<ReturnType<typeof capture>>) => {
-    try {
-      await request.sync.session.sync(request.sessionID, { force: true })
-      return true
-    } catch {
-      return false
     }
   }
 
@@ -112,13 +146,20 @@ export function DialogSessionControls() {
     if (!request) return
     setState("pending", "reload")
     try {
-      const result = await request.client.instance.reload({
-        directory: request.directory,
-        projectControlGuardedReloadPayload: { sessionID: request.sessionID },
+      const result = await runReconciledControl({
+        mutate: async () => {
+          const response = await request.client.session.reloadProject({
+            sessionID: request.sessionID,
+            directory: request.directory,
+          })
+          if (!response.data) throw new Error("Missing project reload outcome")
+          return response.data
+        },
+        reconcileWhen: (outcome) => outcome.type === "completed",
+        reconcile: () => request.sync.session.sync(request.sessionID, { force: true }),
       })
-      if (!result.data) throw new Error("Missing project reload outcome")
-      const feedback = sessionControlFeedback({ action: "reload", type: result.data.type })
-      if (result.data.type === "completed" && !(await refresh(request))) {
+      const feedback = sessionControlFeedback({ action: "reload", type: result.outcome.type })
+      if (!result.reconciled) {
         report(request, "reload.reconciliation_failed")
         return
       }
@@ -135,22 +176,39 @@ export function DialogSessionControls() {
     if (!request || !state.directory.trim()) return
     setState("pending", "directory")
     try {
-      const result = await request.client.session.changeDirectory({
-        sessionID: request.sessionID,
-        directory: request.directory,
-        sessionControlChangeDirectoryPayload: {
-          expectedSource: request.expectedSource,
-          destination: state.directory.trim(),
+      const result = await runReconciledControl({
+        mutate: async () => {
+          const response = await request.client.session.changeDirectory({
+            sessionID: request.sessionID,
+            directory: request.directory,
+            sessionControlChangeDirectoryPayload: {
+              expectedSource: request.directory,
+              destination: state.directory.trim(),
+            },
+          })
+          if (!response.data) throw new Error("Missing directory change outcome")
+          return response.data
         },
+        reconcileWhen: (outcome) => outcome.type === "completed" || outcome.type === "noop",
+        reconcile: () => request.sync.session.sync(request.sessionID, { force: true }),
       })
-      if (!result.data) throw new Error("Missing directory change outcome")
-      const feedback = sessionControlFeedback({ action: "directory", type: result.data.type })
-      if ((result.data.type === "completed" || result.data.type === "noop") && !(await refresh(request))) {
+      const feedback = sessionControlFeedback({ action: "directory", type: result.outcome.type })
+      if (!result.reconciled) {
         report(request, "directory.reconciliation_failed")
         return
       }
+      if (result.outcome.type === "completed") {
+        if (params.id !== request.sessionID || params.serverKey !== request.serverKey) return
+        showToast({ title: language.t(`session.controls.${feedback}`) })
+        setState("pending", undefined)
+        if (!request.serverKey) {
+          navigate(legacySessionHref(result.outcome.session.location.directory, request.sessionID), { replace: true })
+        }
+        dialog.close()
+        return
+      }
       report(request, feedback)
-      if (result.data.type === "completed" || result.data.type === "noop") void inspect()
+      if (result.outcome.type === "noop") await inspect(request)
     } catch {
       request.owner.run(() => showToast({ variant: "error", title: language.t("common.requestFailed") }))
     } finally {
@@ -163,12 +221,26 @@ export function DialogSessionControls() {
     if (!request) return
     setState("pending", "context")
     try {
-      const result = await request.client.session.reloadContext({
-        sessionID: request.sessionID,
-        directory: request.directory,
+      const result = await runReconciledControl({
+        mutate: async () => {
+          const response = await request.client.session.reloadContext({
+            sessionID: request.sessionID,
+            directory: request.directory,
+          })
+          if (!response.data) throw new Error("Missing session context reload outcome")
+          return response.data
+        },
+        reconcileWhen: (outcome) => outcome.type === "idle_complete" || outcome.type === "interrupted_complete",
+        reconcile: () => request.sync.session.sync(request.sessionID, { force: true }),
       })
-      if (!result.data) throw new Error("Missing session context reload outcome")
-      report(request, sessionControlFeedback({ action: "context", type: result.data.type }))
+      if (!result.reconciled) {
+        report(request, "context.reconciliation_failed")
+        return
+      }
+      if (result.outcome.type === "idle_complete" || result.outcome.type === "interrupted_complete") {
+        await inspect(request)
+      }
+      report(request, sessionControlFeedback({ action: "context", type: result.outcome.type }))
     } catch {
       request.owner.run(() => showToast({ variant: "error", title: language.t("common.requestFailed") }))
     } finally {

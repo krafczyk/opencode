@@ -2,6 +2,7 @@ import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Deferred, Effect, Fiber, Layer } from "effect"
+import { TestClock } from "effect/testing"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { registerDisposer } from "../../src/effect/instance-registry"
 import { InstanceBootstrap } from "../../src/project/bootstrap"
@@ -174,6 +175,38 @@ describe("InstanceStore", () => {
       yield* setBootstrap(Effect.die("replacement bootstrap failed"))
 
       expect(yield* store.reloadForControl({ directory: dir })).toEqual({ type: "recovery_failed" })
+    }),
+  )
+
+  it.live("reports rejected disposer cleanup to guarded controls", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      yield* store.load({ directory: dir })
+      yield* registerDisposerScoped(async () => {
+        throw new Error("dispose failed")
+      })
+
+      expect(yield* store.reloadForControl({ directory: dir })).toEqual({ type: "recovery_failed" })
+    }),
+  )
+
+  it.effect("bounds guarded replacement bootstrap and clears its cache entry", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const started = yield* Deferred.make<void>()
+      yield* store.load({ directory: dir })
+      yield* setBootstrap(Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)))
+      const reload = yield* store.reloadForControl({ directory: dir }).pipe(Effect.forkChild)
+
+      yield* Deferred.await(started)
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("5 seconds")
+
+      expect(yield* Fiber.join(reload)).toEqual({ type: "recovery_failed" })
+      yield* setBootstrap(Effect.void)
+      expect((yield* store.load({ directory: dir })).directory).toBe(dir)
     }),
   )
 

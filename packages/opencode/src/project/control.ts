@@ -1,24 +1,24 @@
-export * as ProjectControl from "./control"
-
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { AbsolutePath } from "@opencode-ai/core/schema"
+import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { SessionAdmission } from "@opencode-ai/core/session/admission"
+import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
-import { SessionInputTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
-import { and, eq, isNull, sql } from "drizzle-orm"
+import { eq } from "drizzle-orm"
 import { Context, Effect, Exit, Layer, Schema } from "effect"
 import { SessionControlState } from "../session/control-state"
 import { InstanceStore } from "./instance-store"
+import { Project } from "./project"
 
 /** Identifies the selected session and client-selected instance context for a guarded project reload. */
-export const ReloadInput = Schema.Struct({
+export class ReloadInput extends Schema.Class<ReloadInput>("ProjectControl.ReloadInput")({
   sessionID: SessionSchema.ID,
   directory: AbsolutePath,
-}).annotate({ identifier: "ProjectControl.ReloadInput" })
-export type ReloadInput = typeof ReloadInput.Type
+}) {}
 
 /** Privacy-safe refusal categories returned before an instance reload is dispatched. */
 export const Refusal = Schema.Literals([
@@ -75,63 +75,68 @@ const layer = Layer.effect(
       if (instanceID !== FSUtil.resolve(input.directory)) {
         return { type: "refused" as const, reason: "stale_context" as const }
       }
+      const projectRow = yield* db
+        .select()
+        .from(ProjectTable)
+        .where(eq(ProjectTable.id, selected.projectID))
+        .get()
+        .pipe(Effect.exit)
+      if (Exit.isFailure(projectRow) || !projectRow.value) {
+        return { type: "refused" as const, reason: "malformed_state" as const }
+      }
 
       return yield* admission
         .withInstanceControl(
           instanceID,
-          Effect.gen(function* () {
-            const current = yield* sessions.get(input.sessionID).pipe(Effect.exit)
-            if (Exit.isFailure(current)) return { type: "refused" as const, reason: "malformed_state" as const }
-            if (!current.value) return { type: "refused" as const, reason: "not_found" as const }
-            if (FSUtil.resolve(current.value.location.directory) !== instanceID) {
-              return { type: "refused" as const, reason: "stale_context" as const }
-            }
+          instances.provideContext(
+            {
+              directory: instanceID,
+              worktree: projectRow.value.worktree,
+              project: Project.fromRow(projectRow.value),
+            },
+            Effect.gen(function* () {
+              const current = yield* sessions.get(input.sessionID).pipe(Effect.exit)
+              if (Exit.isFailure(current)) return { type: "refused" as const, reason: "malformed_state" as const }
+              if (!current.value) return { type: "refused" as const, reason: "not_found" as const }
+              if (FSUtil.resolve(current.value.location.directory) !== instanceID) {
+                return { type: "refused" as const, reason: "stale_context" as const }
+              }
 
-            const located = yield* db
-              .select({ id: SessionTable.id, directory: SessionTable.directory })
-              .from(SessionTable)
-              .all()
-              .pipe(Effect.exit)
-            if (Exit.isFailure(located)) return { type: "refused" as const, reason: "malformed_state" as const }
-            const targets = located.value.filter((item) => FSUtil.resolve(item.directory) === instanceID)
-            if (!targets.some((item) => item.id === input.sessionID)) {
-              return { type: "refused" as const, reason: "stale_context" as const }
-            }
+              const located = yield* db
+                .select({ id: SessionTable.id, directory: SessionTable.directory })
+                .from(SessionTable)
+                .where(eq(SessionTable.directory, instanceID))
+                .all()
+                .pipe(Effect.exit)
+              if (Exit.isFailure(located)) return { type: "refused" as const, reason: "malformed_state" as const }
+              const targets = located.value
+              if (!targets.some((item) => item.id === input.sessionID)) {
+                return { type: "refused" as const, reason: "stale_context" as const }
+              }
 
-            const blockers = yield* Effect.forEach(targets, (target) =>
-              Effect.gen(function* () {
-                const pending = (yield* db
-                  .select({
-                    steer: sql<number>`coalesce(sum(case when ${SessionInputTable.delivery} = 'steer' and ${SessionInputTable.promoted_seq} is null then 1 else 0 end), 0)`,
-                    queue: sql<number>`coalesce(sum(case when ${SessionInputTable.delivery} = 'queue' and ${SessionInputTable.promoted_seq} is null then 1 else 0 end), 0)`,
-                  })
-                  .from(SessionInputTable)
-                  .where(and(eq(SessionInputTable.session_id, target.id), isNull(SessionInputTable.promoted_seq)))
-                  .get()) ?? { steer: 0, queue: 0 }
-                return yield* controlState.snapshot({ sessionID: target.id, instanceID, pendingInputs: pending })
-              }).pipe(Effect.exit),
-            )
-            if (blockers.some(Exit.isFailure)) return { type: "refused" as const, reason: "malformed_state" as const }
-            if (
-              blockers.some(
-                (snapshot) =>
-                  Exit.isSuccess(snapshot) &&
-                  (snapshot.value.activity !== "idle" ||
-                    snapshot.value.pendingInputs.steer !== 0 ||
-                    snapshot.value.pendingInputs.queue !== 0 ||
-                    snapshot.value.pendingInteractions.permission !== 0 ||
-                    snapshot.value.pendingInteractions.question !== 0 ||
-                    snapshot.value.control === "session"),
+              const blockers = yield* Effect.forEach(targets, (target) =>
+                Effect.gen(function* () {
+                  const pending = yield* SessionInput.pendingCounts(db, target.id)
+                  return yield* controlState.snapshot({ sessionID: target.id, instanceID, pendingInputs: pending })
+                }).pipe(Effect.exit),
               )
-            ) {
-              return { type: "refused" as const, reason: "blocked" as const }
-            }
+              if (blockers.some(Exit.isFailure)) return { type: "refused" as const, reason: "malformed_state" as const }
+              if (
+                blockers.some(
+                  (snapshot) =>
+                    Exit.isSuccess(snapshot) &&
+                    (SessionControlState.hasWorkOrInteractions(snapshot.value) || snapshot.value.control === "session"),
+                )
+              ) {
+                return { type: "refused" as const, reason: "blocked" as const }
+              }
 
-            const result = yield* instances.reloadForControl({ directory: instanceID })
-            if (result.type === "completed") return { type: "completed" as const }
-            if (result.type === "recovery_failed") return { type: "recovery_failed" as const }
-            return { type: "uncertain" as const }
-          }),
+              const result = yield* instances.reloadForControl({ directory: instanceID })
+              if (result.type === "completed") return { type: "completed" as const }
+              if (result.type === "recovery_failed") return { type: "recovery_failed" as const }
+              return { type: "uncertain" as const }
+            }),
+          ),
         )
         .pipe(
           Effect.catchTag("SessionAdmission.ControlInProgressError", () =>
@@ -151,3 +156,5 @@ export const node = LayerNode.make({
   layer,
   deps: [Database.node, InstanceStore.node, SessionAdmission.node, SessionControlState.node, SessionStore.node],
 })
+
+export * as ProjectControl from "./control"

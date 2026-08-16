@@ -1,5 +1,3 @@
-export * as SessionControlState from "./control-state"
-
 import { BackgroundJob } from "@/background/job"
 import { Permission } from "@/permission"
 import { Question } from "@/question"
@@ -13,11 +11,10 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 
 /** Privacy-safe durable input categories that have not yet been promoted to user messages. */
-export const PendingInputs = Schema.Struct({
+export class PendingInputs extends Schema.Class<PendingInputs>("SessionControlState.PendingInputs")({
   steer: NonNegativeInt,
   queue: NonNegativeInt,
-}).annotate({ identifier: "SessionControlState.PendingInputs" })
-export type PendingInputs = typeof PendingInputs.Type
+}) {}
 
 /** Process-local execution state observed after the inspection transaction completes. */
 export const Activity = Schema.Literals(["idle", "active", "retrying"]).annotate({
@@ -26,11 +23,10 @@ export const Activity = Schema.Literals(["idle", "active", "retrying"]).annotate
 export type Activity = typeof Activity.Type
 
 /** Privacy-safe pending interaction category counts. Request bodies are never returned. */
-export const PendingInteractions = Schema.Struct({
+export class PendingInteractions extends Schema.Class<PendingInteractions>("SessionControlState.PendingInteractions")({
   permission: NonNegativeInt,
   question: NonNegativeInt,
-}).annotate({ identifier: "SessionControlState.PendingInteractions" })
-export type PendingInteractions = typeof PendingInteractions.Type
+}) {}
 
 /** Exclusive control ownership affecting a selected session. */
 export const Control = Schema.Literals(["none", "session", "instance"]).annotate({
@@ -42,15 +38,25 @@ export type Control = typeof Control.Type
  * Observed process-local state for inspection and later mutation policy.
  * It contains no prompt, permission, question, job-output, model, or credential content.
  */
-export const Snapshot = Schema.Struct({
+export class Snapshot extends Schema.Class<Snapshot>("SessionControlState.Snapshot")({
   observed: Schema.Literal(true),
   activity: Activity,
   pendingInputs: PendingInputs,
   pendingInteractions: PendingInteractions,
   control: Control,
   backgroundJobs: NonNegativeInt,
-}).annotate({ identifier: "SessionControlState.Snapshot" })
-export type Snapshot = typeof Snapshot.Type
+}) {}
+
+/** Returns whether a control-state snapshot contains active work, pending inputs, or pending interactions. */
+export function hasWorkOrInteractions(input: Snapshot) {
+  return (
+    input.activity !== "idle" ||
+    input.pendingInputs.steer !== 0 ||
+    input.pendingInputs.queue !== 0 ||
+    input.pendingInteractions.permission !== 0 ||
+    input.pendingInteractions.question !== 0
+  )
+}
 
 /** Input identifying the durable session and exact instance whose volatile state is observed. */
 export interface SnapshotInput {
@@ -117,17 +123,17 @@ export const layerWith = (options?: LayerOptions) =>
             : current.has(input.sessionID) || legacy || legacyStatus.type === "busy" || claimed || descendants > 0
               ? "active"
               : "idle"
-        return {
+        return new Snapshot({
           observed: true as const,
           activity,
-          pendingInputs: input.pendingInputs,
-          pendingInteractions: {
+          pendingInputs: new PendingInputs(input.pendingInputs),
+          pendingInteractions: new PendingInteractions({
             permission: permissions.filter((item) => item.sessionID === input.sessionID).length,
             question: questions.filter((item) => item.sessionID === input.sessionID).length,
-          },
+          }),
           control,
           backgroundJobs: descendants,
-        }
+        })
       })
 
       const quiescent = Effect.fn("SessionControlState.quiescent")(function* (
@@ -136,7 +142,6 @@ export const layerWith = (options?: LayerOptions) =>
         const state = yield* snapshot({ ...input, pendingInputs: { steer: 0, queue: 0 } })
         return (
           state.activity === "idle" &&
-          state.backgroundJobs === 0 &&
           state.pendingInteractions.permission === 0 &&
           state.pendingInteractions.question === 0
         )
@@ -191,3 +196,5 @@ export const node = LayerNode.make({
     BackgroundJob.node,
   ],
 })
+
+export * as SessionControlState from "./control-state"

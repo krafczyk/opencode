@@ -1,6 +1,6 @@
 export * as SessionInput from "./input"
 
-import { and, asc, eq, isNull, lte } from "drizzle-orm"
+import { and, asc, eq, isNull, lte, sql } from "drizzle-orm"
 import { DateTime, Effect, Schema } from "effect"
 import { Admitted, Delivery } from "@opencode-ai/schema/session-input"
 import type { Database } from "../database/database"
@@ -12,6 +12,7 @@ import { SessionSchema } from "./schema"
 import { SessionInputTable, SessionMessageTable } from "./sql"
 
 type DatabaseService = Database.Interface["db"]
+type QueryDatabase = Pick<DatabaseService, "select">
 
 export { Admitted, Delivery }
 
@@ -186,6 +187,24 @@ export const hasPending = Effect.fn("SessionInput.hasPending")(function* (
     .get()
     .pipe(Effect.orDie)
   return row !== undefined
+})
+
+/** Counts unpromoted steer and queue inputs for one session without loading prompt content. */
+export const pendingCounts = Effect.fn("SessionInput.pendingCounts")(function* (
+  db: QueryDatabase,
+  sessionID: SessionSchema.ID,
+) {
+  return (
+    (yield* db
+      .select({
+        steer: sql<number>`coalesce(sum(case when ${SessionInputTable.delivery} = 'steer' and ${SessionInputTable.promoted_seq} is null then 1 else 0 end), 0)`,
+        queue: sql<number>`coalesce(sum(case when ${SessionInputTable.delivery} = 'queue' and ${SessionInputTable.promoted_seq} is null then 1 else 0 end), 0)`,
+      })
+      .from(SessionInputTable)
+      .where(and(eq(SessionInputTable.session_id, sessionID), isNull(SessionInputTable.promoted_seq)))
+      .get()
+      .pipe(Effect.orDie)) ?? { steer: 0, queue: 0 }
+  )
 })
 
 export const equivalent = (

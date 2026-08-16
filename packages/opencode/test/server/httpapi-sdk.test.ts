@@ -401,7 +401,7 @@ describe("HttpApi SDK", () => {
         })
         const noRetryContextReload = yield* capture(() => noRetrySdk.session.reloadContext({ sessionID }))
         const guardedReload = yield* capture(() =>
-          sdk.instance.reload({ projectControlGuardedReloadPayload: { sessionID } }),
+          sdk.session.reloadProject({ sessionID }),
         )
         const missing = yield* capture(() => sdk.session.inspection({ sessionID: "ses_missing" }))
 

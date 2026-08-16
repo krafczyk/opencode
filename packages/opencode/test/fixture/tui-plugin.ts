@@ -90,6 +90,7 @@ type Opts = {
   attention?: AttentionOpts
   event?: HostPluginApi["event"]
   mode?: HostPluginApi["mode"]
+  session?: HostPluginApi["session"]
   count?: Count
   keymap?: HostPluginApi["keymap"]
   tuiConfig?: Partial<HostPluginApi["tuiConfig"]>
@@ -208,6 +209,13 @@ export function createTuiPluginApi(opts: Opts = {}): HostPluginApi {
     get client() {
       return client()
     },
+    session:
+      opts.session ??
+      ({
+        reconcile: async () => {
+          throw new Error("Session reconciliation is not implemented in this fixture")
+        },
+      } satisfies HostPluginApi["session"]),
     event: opts.event ?? {
       on: () => {
         if (count) count.event_add += 1

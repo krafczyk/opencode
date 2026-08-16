@@ -101,6 +101,7 @@ const englishFallbackKeys = new Set([
   "session.controls.context.interrupted_complete",
   "session.controls.context.failed_before_reset",
   "session.controls.context.recovery_uncertain",
+  "session.controls.context.reconciliation_failed",
   "status.popover.action.resyncSession",
 ])
 const pluralCategories = new Map(

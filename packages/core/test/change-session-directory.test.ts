@@ -70,6 +70,7 @@ describe("ChangeSessionDirectory", () => {
         .run()
 
       const control = yield* ChangeSessionDirectory.Service
+      const directories = yield* ProjectDirectories.Service
       const session = yield* control.change({ sessionID, expectedSource: source, destination, root })
 
       expect(session.location.directory).toBe(destination)
@@ -94,9 +95,7 @@ describe("ChangeSessionDirectory", () => {
           .where(eq(SessionContextEpochTable.session_id, unrelated))
           .get(),
       ).toMatchObject({ baseline: "other" })
-      expect(yield* (yield* ProjectDirectories.Service).list(projectID)).toEqual([
-        { directory: root, strategy: undefined },
-      ])
+      expect(yield* directories.list(projectID)).toEqual([{ directory: root, strategy: undefined }])
     }),
   )
 
@@ -104,6 +103,7 @@ describe("ChangeSessionDirectory", () => {
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const events = yield* EventV2.Service
+      const directories = yield* ProjectDirectories.Service
       const control = yield* ChangeSessionDirectory.Service
       const projectID = Project.ID.make("project-directory-rollback")
       const source = AbsolutePath.make("/project/source")
@@ -212,6 +212,7 @@ describe("ChangeSessionDirectory", () => {
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const events = yield* EventV2.Service
+      const directories = yield* ProjectDirectories.Service
       const projectID = Project.ID.make("project-directory-replay")
       const source = AbsolutePath.make("/project/source")
       const root = AbsolutePath.make("/project/worktree")
@@ -241,9 +242,7 @@ describe("ChangeSessionDirectory", () => {
       })
       const serialized = yield* db.select().from(EventTable).where(eq(EventTable.id, published.id)).get()
       expect(serialized).toBeDefined()
-      expect(yield* (yield* ProjectDirectories.Service).list(projectID)).toEqual([
-        { directory: root, strategy: undefined },
-      ])
+      expect(yield* directories.list(projectID)).toEqual([{ directory: root, strategy: undefined }])
       expect(
         yield* db
           .select()
@@ -274,9 +273,7 @@ describe("ChangeSessionDirectory", () => {
           .where(eq(SessionTable.id, sessionID))
           .get(),
       ).toEqual({ directory: destination })
-      expect(yield* (yield* ProjectDirectories.Service).list(projectID)).toEqual([
-        { directory: root, strategy: undefined },
-      ])
+      expect(yield* directories.list(projectID)).toEqual([{ directory: root, strategy: undefined }])
       expect(
         yield* db
           .select()
@@ -311,7 +308,7 @@ describe("ChangeSessionDirectory", () => {
           .where(eq(SessionTable.id, sessionID))
           .get(),
       ).toEqual({ directory: destination })
-      expect(yield* (yield* ProjectDirectories.Service).list(projectID)).toEqual([])
+      expect(yield* directories.list(projectID)).toEqual([])
       expect(
         yield* db
           .select()

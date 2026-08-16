@@ -4,18 +4,19 @@ import { createTuiApiAdapters } from "../../../../src/plugin/adapters"
 function adapters(input: { reconcile: (sessionID: string) => Promise<{ directory: string }> }) {
   const navigated: unknown[] = []
   const reconnected: string[] = []
+  const route = {
+    data: { type: "session", sessionID: "ses_control" } as { type: string; sessionID?: string },
+    navigate(route: unknown) {
+      navigated.push(route)
+    },
+  }
   const api = createTuiApiAdapters({
     version: "1.18.18",
     tuiConfig: {} as never,
     dialog: {} as never,
     keymap: {} as never,
     kv: {} as never,
-    route: {
-      data: { type: "session", sessionID: "ses_control" },
-      navigate(route: unknown) {
-        navigated.push(route)
-      },
-    } as never,
+    route: route as never,
     routes: {} as never,
     event: {} as never,
     sdk: {} as never,
@@ -31,7 +32,7 @@ function adapters(input: { reconcile: (sessionID: string) => Promise<{ directory
     attention: {} as never,
     Slot: (() => null) as never,
   })
-  return { api, navigated, reconnected }
+  return { api, navigated, reconnected, route }
 }
 
 describe("plugin control reconciliation", () => {
@@ -55,5 +56,23 @@ describe("plugin control reconciliation", () => {
 
     expect(harness.reconnected).toEqual([])
     expect(harness.navigated).toEqual([{ type: "home" }])
+  })
+
+  test("does not reconnect an editor after the user selects another route", async () => {
+    let release: ((value: { directory: string }) => void) | undefined
+    const harness = adapters({
+      reconcile: () =>
+        new Promise((resolve) => {
+          release = resolve
+        }),
+    })
+
+    const reconciliation = harness.api.session.reconcile("ses_control")
+    harness.route.data = { type: "home" }
+    release!({ directory: "/server/destination" })
+
+    await expect(reconciliation).resolves.toEqual({ directory: "/server/destination" })
+    expect(harness.reconnected).toEqual([])
+    expect(harness.navigated).toEqual([])
   })
 })

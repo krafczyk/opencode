@@ -131,6 +131,7 @@ export const dict = {
   "session.controls.context.interrupted_complete": "Session context reloaded after interrupting active work",
   "session.controls.context.failed_before_reset": "Session context reload failed",
   "session.controls.context.recovery_uncertain": "Session context reload recovery is uncertain",
+  "session.controls.context.reconciliation_failed": "Session context reloaded, but local reconciliation failed",
 
   "palette.search.placeholder": "Search files, commands, and sessions",
   "palette.search.placeholder.home": "Search commands and sessions",
