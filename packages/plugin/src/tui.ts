@@ -578,6 +578,18 @@ export type TuiWorkspace = {
   set: (workspaceID?: string) => void
 }
 
+/**
+ * Host-owned repair for a session changed by a server control.
+ *
+ * Plugins provide only the selected session ID. The host refreshes its filtered
+ * and exact-detail caches, reconnects editor ownership to the authoritative
+ * directory, and repairs the selected route. It never mutates server state or
+ * exposes generic cache writes to plugins.
+ */
+export type TuiSessionControl = {
+  reconcile: (sessionID: string) => Promise<{ directory: string }>
+}
+
 export type TuiPluginApi = {
   app: TuiApp
   attention: TuiAttention
@@ -610,6 +622,8 @@ export type TuiPluginApi = {
   readonly tuiConfig: Frozen<TuiConfigView>
   kv: TuiKV
   state: TuiState
+  /** Host-owned reconciliation for server-controlled selected sessions. */
+  session: TuiSessionControl
   theme: TuiTheme
   client: OpencodeClient
   event: TuiEventBus

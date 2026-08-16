@@ -30,7 +30,7 @@ import { DialogProvider as DialogProviderList } from "./component/dialog-provide
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
-import { EditorContextProvider } from "./context/editor"
+import { EditorContextProvider, useEditorContext } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
 import { StartupLoading } from "./component/startup-loading"
@@ -378,6 +378,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const sync = useSync()
+  const editor = useEditorContext()
   const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
@@ -397,6 +398,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       event,
       sdk,
       sync,
+      editor,
       theme: themeState,
       toast,
       renderer,
