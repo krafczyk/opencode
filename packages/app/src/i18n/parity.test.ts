@@ -103,6 +103,7 @@ const englishFallbackKeys = new Set([
   "session.controls.context.recovery_uncertain",
   "session.controls.context.reconciliation_failed",
   "status.popover.action.resyncSession",
+  "status.popover.toast.resyncSuccess",
 ])
 const pluralCategories = new Map(
   appLocales.map(

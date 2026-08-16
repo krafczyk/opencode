@@ -267,10 +267,16 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
     if (!sessionID) return
     const target = sync()
     const scope = serverSDK().scope
-    void target.session.sync(sessionID, { force: true }).catch(() => {
-      if (params.id !== sessionID || serverSDK().scope !== scope) return
-      showToast({ variant: "error", title: language.t("common.requestFailed") })
-    })
+    void target.session
+      .sync(sessionID, { force: true })
+      .then(() => {
+        if (params.id !== sessionID || serverSDK().scope !== scope) return
+        showToast({ variant: "success", title: language.t("status.popover.toast.resyncSuccess") })
+      })
+      .catch(() => {
+        if (params.id !== sessionID || serverSDK().scope !== scope) return
+        showToast({ variant: "error", title: language.t("common.requestFailed") })
+      })
   }
 
   createEffect(() => {
