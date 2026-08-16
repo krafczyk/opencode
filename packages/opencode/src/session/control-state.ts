@@ -66,6 +66,10 @@ export interface SnapshotInput {
  */
 export interface Interface {
   readonly snapshot: (input: SnapshotInput) => Effect.Effect<Snapshot>
+  /** Reports whether current execution, legacy execution, descendant jobs, and session interactions are all settled. */
+  readonly quiescent: (input: Pick<SnapshotInput, "sessionID" | "instanceID">) => Effect.Effect<boolean>
+  /** Waits for current execution, legacy execution, descendant jobs, and session interactions to settle. */
+  readonly awaitQuiescent: (input: Pick<SnapshotInput, "sessionID" | "instanceID">) => Effect.Effect<void>
 }
 
 /** Provides the shared process-local control-state observer. */
@@ -126,7 +130,25 @@ export const layerWith = (options?: LayerOptions) =>
         }
       })
 
-      return Service.of({ snapshot })
+      const quiescent = Effect.fn("SessionControlState.quiescent")(function* (
+        input: Pick<SnapshotInput, "sessionID" | "instanceID">,
+      ) {
+        const state = yield* snapshot({ ...input, pendingInputs: { steer: 0, queue: 0 } })
+        return (
+          state.activity === "idle" &&
+          state.backgroundJobs === 0 &&
+          state.pendingInteractions.permission === 0 &&
+          state.pendingInteractions.question === 0
+        )
+      })
+
+      const awaitQuiescent = Effect.fn("SessionControlState.awaitQuiescent")(function* (
+        input: Pick<SnapshotInput, "sessionID" | "instanceID">,
+      ) {
+        while (!(yield* quiescent(input))) yield* Effect.sleep("10 millis")
+      })
+
+      return Service.of({ snapshot, quiescent, awaitQuiescent })
     }),
   )
 
