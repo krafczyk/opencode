@@ -1260,6 +1260,32 @@ describe("server session", () => {
     expect(store.data.part[stale.id]).toEqual([{ ...stalePart, text: "stale live" }])
   })
 
+  test("runs one trailing forced refresh after an ordinary load", async () => {
+    const pending = deferredResponse()
+    const original = userMessage("message-1")
+    const missed = { ...original, id: "message-2", time: { created: 2 } }
+    const client = messageClient(
+      pending.promise,
+      response([
+        { info: original, parts: [] },
+        { info: missed, parts: [] },
+      ]),
+    )
+    const store = createServerSession(client)
+    const ordinary = store.sync("child")
+    await client.requested(1)
+
+    const forced = store.sync("child", { force: true })
+    const duplicate = store.sync("child", { force: true })
+    expect(forced).toBe(duplicate)
+
+    pending.resolve(response([{ info: original, parts: [] }]))
+    await Promise.all([ordinary, forced, duplicate])
+
+    expect(client.requests).toHaveLength(2)
+    expect(store.data.message.child).toEqual([original, missed])
+  })
+
   test("keeps fetched message metadata when only a part changes", async () => {
     const pending = deferredResponse()
     const stale = userMessage("message")

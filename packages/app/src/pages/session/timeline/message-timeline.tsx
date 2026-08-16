@@ -1543,6 +1543,19 @@ export function MessageTimeline(props: {
                                     </DropdownMenu.ItemLabel>
                                   </DropdownMenu.Item>
                                 </Show>
+                                <DropdownMenu.Item
+                                  onSelect={() => {
+                                    const key = sessionKey()
+                                    void import("@/components/dialog-session-controls").then((x) => {
+                                      if (sessionKey() !== key) return
+                                      dialog.show(() => <x.DialogSessionControls />)
+                                    })
+                                  }}
+                                >
+                                  <DropdownMenu.ItemLabel>
+                                    {language.t("command.session.controls")}
+                                  </DropdownMenu.ItemLabel>
+                                </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => exportSession(id)}>
                                   <DropdownMenu.ItemLabel>{language.t("common.export")}</DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
@@ -1617,6 +1630,17 @@ export function MessageTimeline(props: {
                                   {language.t("session.share.action.share")}...
                                 </MenuV2.Item>
                               </Show>
+                              <MenuV2.Item
+                                onSelect={() => {
+                                  const key = sessionKey()
+                                  void import("@/components/dialog-session-controls").then((x) => {
+                                    if (sessionKey() !== key) return
+                                    dialog.show(() => <x.DialogSessionControls />)
+                                  })
+                                }}
+                              >
+                                {language.t("command.session.controls")}
+                              </MenuV2.Item>
                               <MenuV2.Item onSelect={() => exportSession(id)}>
                                 {language.t("common.export")}...
                               </MenuV2.Item>

@@ -210,6 +210,7 @@ export function createServerSession(
   })
   const requests = new Map<string, Promise<Session>>()
   const inflight = new Map<string, Promise<void>>()
+  const forcedSync = new Map<string, Promise<void>>()
   const inflightTodo = new Map<string, Promise<void>>()
   const optimistic = new Map<string, Map<string, OptimisticItem>>()
   const v2 = createV2SessionReducer()
@@ -266,6 +267,7 @@ export function createServerSession(
         ...pinned.keys(),
         ...requests.keys(),
         ...inflight.keys(),
+        ...forcedSync.keys(),
         ...inflightTodo.keys(),
         ...messageLoads.keys(),
         ...optimistic.keys(),
@@ -485,6 +487,7 @@ export function createServerSession(
       clearOptimistic(sessionID)
       requests.delete(sessionID)
       inflight.delete(sessionID)
+      forcedSync.delete(sessionID)
       inflightTodo.delete(sessionID)
       messageLoads.delete(sessionID)
       v2.clear(sessionID)
@@ -835,12 +838,33 @@ export function createServerSession(
 
   const sync = (sessionID: string, options?: { force?: boolean; messageLimit?: number }) => {
     touch(sessionID)
+    if (options?.force) {
+      const pending = forcedSync.get(sessionID)
+      if (pending) return pending
+      const ordinary = inflight.get(sessionID)
+      const request = (async () => {
+        // A forced refresh waits for an active ordinary fill, then performs its own latest-page read.
+        // Its result must not be weakened by sharing the ordinary request.
+        if (ordinary) await ordinary.catch(() => undefined)
+        await runInflight(inflight, sessionID, async () => {
+          await Promise.all([
+            resolve(sessionID, { force: true }),
+            loadMessages(sessionID, options.messageLimit ?? meta.limit[sessionID] ?? initialMessagePageSize),
+          ])
+        })
+      })()
+      const tracked = request.finally(() => {
+        if (forcedSync.get(sessionID) === tracked) forcedSync.delete(sessionID)
+      })
+      forcedSync.set(sessionID, tracked)
+      return tracked
+    }
     return runInflight(inflight, sessionID, async () => {
       const cached = data.message[sessionID] !== undefined && meta.limit[sessionID] !== undefined
-      if (cached && data.info[sessionID] && !options?.force) return
+      if (cached && data.info[sessionID]) return
       await Promise.all([
         resolve(sessionID, options),
-        cached && !options?.force
+        cached
           ? Promise.resolve()
           : loadMessages(sessionID, options?.messageLimit ?? meta.limit[sessionID] ?? initialMessagePageSize),
       ])

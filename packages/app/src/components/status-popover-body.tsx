@@ -4,7 +4,7 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { Switch } from "@opencode-ai/ui/switch"
 import { Tabs } from "@opencode-ai/ui/tabs"
 import { showToast } from "@/utils/toast"
-import { useNavigate } from "@solidjs/router"
+import { useNavigate, useParams } from "@solidjs/router"
 import { type Accessor, createEffect, createMemo, For, type JSXElement, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { ServerHealthIndicator, ServerRow } from "@/components/server/server-row"
@@ -16,7 +16,7 @@ import { type ServerHealth } from "@/utils/server-health"
 import { useGlobal } from "@/context/global"
 import { useSettings } from "@/context/settings"
 import { useMcpToggle } from "@/context/mcp"
-import { useServerProtocol } from "@/context/server-sdk"
+import { useServerProtocol, useServerSDK } from "@/context/server-sdk"
 
 const pluginEmptyMessage = (value: string, file: string): JSXElement => {
   const parts = value.split(file)
@@ -259,12 +259,17 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
   const navigate = useNavigate()
   const settings = useSettings()
   const protocol = useServerProtocol()
+  const serverSDK = useServerSDK()
+  const params = useParams()
 
-  const fail = (err: unknown) => {
-    showToast({
-      variant: "error",
-      title: language.t("common.requestFailed"),
-      description: err instanceof Error ? err.message : String(err),
+  const resyncSession = () => {
+    const sessionID = params.id
+    if (!sessionID) return
+    const target = sync()
+    const scope = serverSDK().scope
+    void target.session.sync(sessionID, { force: true }).catch(() => {
+      if (params.id !== sessionID || serverSDK().scope !== scope) return
+      showToast({ variant: "error", title: language.t("common.requestFailed") })
     })
   }
 
@@ -392,6 +397,11 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                 >
                   {language.t("status.popover.action.manageServers")}
                 </Button>
+                <Show when={params.id}>
+                  <Button variant="secondary" class="mt-2 self-start h-8 px-3 py-1.5" onClick={resyncSession}>
+                    {language.t("status.popover.action.resyncSession")}
+                  </Button>
+                </Show>
               </div>
             </div>
           </Tabs.Content>
@@ -454,6 +464,11 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                     )
                   }}
                 </For>
+              </Show>
+              <Show when={params.id}>
+                <Button variant="secondary" class="mt-3 self-start h-8 px-3 py-1.5" onClick={resyncSession}>
+                  {language.t("status.popover.action.resyncSession")}
+                </Button>
               </Show>
             </div>
           </div>
