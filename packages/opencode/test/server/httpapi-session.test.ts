@@ -388,6 +388,81 @@ describe("session HttpApi", () => {
     { git: true, config: { formatter: false, lsp: false } },
   )
 
+  it.instance(
+    "inspects a selected session without creating model work",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const session = yield* createSession({ title: "inspection" })
+
+        const response = yield* request(`/session/${session.id}/inspection`, {
+          headers: { "x-opencode-directory": test.directory },
+        })
+
+        expect(response.status).toBe(200)
+        expect(yield* responseJson(response)).toMatchObject({
+          session: { id: session.id, directory: test.directory },
+          counts: { userPrompts: 0, completedAssistantResponses: 0 },
+        })
+
+        const directory = yield* request(pathFor(SessionPaths.changeDirectory, { sessionID: session.id }), {
+          method: "POST",
+          headers: { "x-opencode-directory": test.directory, "content-type": "application/json" },
+          body: JSON.stringify({ expectedSource: test.directory, destination: test.directory }),
+        })
+        expect(directory.status).toBe(200)
+        expect(yield* responseJson(directory)).toMatchObject({
+          type: "noop",
+          session: { id: session.id, location: { directory: test.directory } },
+        })
+
+        const reload = yield* request(pathFor(SessionPaths.reloadContext, { sessionID: session.id }), {
+          method: "POST",
+          headers: { "x-opencode-directory": test.directory },
+        })
+        expect(reload.status).toBe(200)
+        expect(yield* responseJson(reload)).toEqual({ type: "idle_complete" })
+
+        const malformed = yield* request(pathFor(SessionPaths.changeDirectory, { sessionID: session.id }), {
+          method: "POST",
+          headers: { "x-opencode-directory": test.directory, "content-type": "application/json" },
+          body: JSON.stringify({ expectedSource: test.directory }),
+        })
+        expect(malformed.status).toBe(400)
+
+        const missing = SessionID.descending()
+        const missingInspection = yield* request(pathFor(SessionPaths.inspection, { sessionID: missing }), {
+          headers: { "x-opencode-directory": test.directory },
+        })
+        expect(missingInspection.status).toBe(404)
+        expect(yield* responseJson(missingInspection)).toEqual({
+          _tag: "SessionNotFoundError",
+          sessionID: missing,
+          message: `Session not found: ${missing}`,
+        })
+
+        const inputs = yield* Database.Service.use(({ db }) =>
+          db
+            .select()
+            .from(SessionInputTable)
+            .where(eq(SessionInputTable.session_id, session.id))
+            .all()
+            .pipe(Effect.orDie),
+        )
+        const messages = yield* Database.Service.use(({ db }) =>
+          db
+            .select()
+            .from(SessionMessageTable)
+            .where(eq(SessionMessageTable.session_id, session.id))
+            .all()
+            .pipe(Effect.orDie),
+        )
+        expect(inputs).toEqual([])
+        expect(messages).toEqual([])
+      }),
+    { git: true, config: { formatter: false, lsp: false } },
+  )
+
   it.live("uses the persisted session directory for prompt requests", () =>
     Effect.gen(function* () {
       const llm = yield* TestLLMServer

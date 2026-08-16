@@ -90,6 +90,8 @@ import type {
   GlobalUpgradeResponses,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
+  InstanceReloadErrors,
+  InstanceReloadResponses,
   LocationRef,
   LspStatusErrors,
   LspStatusResponses,
@@ -131,6 +133,7 @@ import type {
   PermissionV2Reply,
   PermissionV2Source,
   ProjectCommands,
+  ProjectControlGuardedReloadPayload,
   ProjectCurrentErrors,
   ProjectCurrentResponses,
   ProjectDirectoriesErrors,
@@ -177,10 +180,13 @@ import type {
   QuestionV2Reply,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionChangeDirectoryErrors,
+  SessionChangeDirectoryResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
   SessionCommandResponses,
+  SessionControlChangeDirectoryPayload,
   SessionCreateErrors,
   SessionCreateResponses,
   SessionDeleteErrors,
@@ -195,6 +201,8 @@ import type {
   SessionGetResponses,
   SessionInitErrors,
   SessionInitResponses,
+  SessionInspectionErrors,
+  SessionInspectionResponses,
   SessionListErrors,
   SessionListResponses,
   SessionMessageErrors,
@@ -205,6 +213,8 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionReloadContextErrors,
+  SessionReloadContextResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
@@ -1952,6 +1962,43 @@ export class Instance extends HeyApiClient {
       ...params,
     })
   }
+
+  /**
+   * Reload selected session instance
+   *
+   * Reload only the exact instance derived from the selected session after server-side blocker validation. This operation creates no prompt, message, or model turn.
+   */
+  public reload<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      projectControlGuardedReloadPayload?: ProjectControlGuardedReloadPayload
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "projectControlGuardedReloadPayload", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<InstanceReloadResponses, InstanceReloadErrors, ThrowOnError>({
+      url: "/instance/reload",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
 }
 
 export class Path extends HeyApiClient {
@@ -3597,6 +3644,117 @@ export class Session2 extends HeyApiClient {
         ...options?.headers,
         ...params.headers,
       },
+    })
+  }
+
+  /**
+   * Inspect session
+   *
+   * Read one authoritative session and project snapshot without creating prompts, messages, model turns, or provider requests.
+   */
+  public inspection<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionInspectionResponses, SessionInspectionErrors, ThrowOnError>({
+      url: "/session/{sessionID}/inspection",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Change session directory
+   *
+   * Change only the selected session's durable directory after server validation. This operation never changes either working tree.
+   */
+  public changeDirectory<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      sessionControlChangeDirectoryPayload?: SessionControlChangeDirectoryPayload
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "sessionControlChangeDirectoryPayload", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionChangeDirectoryResponses,
+      SessionChangeDirectoryErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/directory",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Reload session context
+   *
+   * Fence and reset the selected session's location-derived context without changing its directory or reloading its project instance.
+   */
+  public reloadContext<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionReloadContextResponses,
+      SessionReloadContextErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/context/reload",
+      ...options,
+      ...params,
     })
   }
 

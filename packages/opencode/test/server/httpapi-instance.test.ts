@@ -262,4 +262,27 @@ describe("instance HttpApi", () => {
       )
     }),
   )
+
+  it.live(
+    "guards reload through the selected session",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* tmpdirScoped({ git: true })
+        const created = yield* HttpClientRequest.post(SessionPaths.create).pipe(
+          directoryHeader(dir),
+          HttpClientRequest.bodyJson({ title: "guarded reload" }),
+          Effect.flatMap(HttpClient.execute),
+        )
+        const session = (yield* created.json) as { id: string }
+        const response = yield* HttpClientRequest.post("/instance/reload").pipe(
+          directoryHeader(dir),
+          HttpClientRequest.bodyJson({ sessionID: session.id }),
+          Effect.flatMap(HttpClient.execute),
+        )
+
+        expect(response.status).toBe(200)
+        expect(yield* response.json).toMatchObject({ type: "completed" })
+      }),
+    { timeout: 15000 },
+  )
 })
