@@ -16,6 +16,7 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { InstanceStore } from "@/project/instance-store"
 import { InstanceBootstrap } from "@/project/bootstrap"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 
 const it = testEffect(
   AppNodeBuilder.build(
@@ -25,6 +26,7 @@ const it = testEffect(
       SessionProjector.node,
       CrossSpawnSpawner.node,
       InstanceStore.node,
+      SessionAdmission.node,
     ]),
     [
       [RuntimeFlags.node, RuntimeFlags.layer({ experimentalWorkspaces: false })],
@@ -217,6 +219,28 @@ describe("Session", () => {
 
       const getExit = yield* session.get(info.id).pipe(Effect.exit)
       expect(Exit.isFailure(getExit)).toBe(true)
+    }),
+  )
+
+  it.instance("remove propagates a child session control refusal", () =>
+    Effect.gen(function* () {
+      const admission = yield* SessionAdmission.Service
+      const session = yield* SessionNs.Service
+      const parent = yield* session.create({ title: "parent" })
+      const child = yield* session.create({ title: "child", parentID: parent.id })
+
+      const refusal = yield* admission.withSessionControl(
+        { sessionID: child.id, instanceID: child.directory },
+        session.remove(parent.id).pipe(Effect.flip),
+      )
+
+      expect(refusal).toMatchObject({
+        _tag: "SessionAdmission.ControlInProgressError",
+        scope: "session",
+        sessionID: child.id,
+      })
+      yield* session.remove(child.id)
+      yield* session.remove(parent.id)
     }),
   )
 

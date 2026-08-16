@@ -34,6 +34,7 @@ import { InstanceStore } from "@/project/instance-store"
 import { WorkspaceAdapterRuntime } from "./workspace-adapter-runtime"
 import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
 import { WorkspaceEvent } from "@opencode-ai/schema/workspace-event"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 
 export const Info = Schema.Struct({
   ...WorkspaceInfoSchema.fields,
@@ -134,7 +135,8 @@ export interface Interface {
   readonly list: (project: Project.Info) => Effect.Effect<Info[]>
   readonly syncList: (project: Project.Info) => Effect.Effect<void>
   readonly get: (id: WorkspaceV2.ID) => Effect.Effect<Info | undefined>
-  readonly remove: (id: WorkspaceV2.ID) => Effect.Effect<Info | undefined>
+  /** Removes a workspace unless session cleanup is fenced by an active control. */
+  readonly remove: (id: WorkspaceV2.ID) => Effect.Effect<Info | undefined, SessionAdmission.ControlInProgressError>
   readonly status: () => Effect.Effect<ConnectionStatus[]>
   readonly isSyncing: (workspaceID: WorkspaceV2.ID) => Effect.Effect<boolean>
   readonly waitForSync: (

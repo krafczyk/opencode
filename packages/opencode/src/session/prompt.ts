@@ -46,6 +46,7 @@ import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Type
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
@@ -100,11 +101,22 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
 }
 
 export interface Interface {
+  /** Interrupts active legacy work without taking a new admission claim. */
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
-  readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
-  readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts>
-  readonly shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError>
-  readonly command: (input: CommandInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
+  /** Persists a legacy user message and registers runner ownership unless a control fence refuses admission. */
+  readonly prompt: (
+    input: PromptInput,
+  ) => Effect.Effect<SessionV1.WithParts, Image.Error | SessionAdmission.ControlInProgressError>
+  /** Starts or joins legacy model work unless a control fence refuses admission. */
+  readonly loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts, SessionAdmission.ControlInProgressError>
+  /** Persists and starts legacy shell work unless a control fence refuses admission. */
+  readonly shell: (
+    input: ShellInput,
+  ) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionAdmission.ControlInProgressError>
+  /** Runs a legacy command through prompt admission and fails while a control fence is active. */
+  readonly command: (
+    input: CommandInput,
+  ) => Effect.Effect<SessionV1.WithParts, Image.Error | SessionAdmission.ControlInProgressError>
   readonly resolvePromptParts: (template: string) => Effect.Effect<PromptInput["parts"]>
 }
 
@@ -140,6 +152,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const admission = yield* SessionAdmission.Service
     const { db } = database
     const ops = Effect.fn("SessionPrompt.ops")(function* () {
       return {
@@ -1049,25 +1062,36 @@ const layer = Layer.effect(
       return { info, parts }
     }, Effect.scoped)
 
-    const prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error> = Effect.fn(
+    const claim = Effect.fn("SessionPrompt.claim")(function* (sessionID: SessionID) {
+      const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+      return yield* admission.claim({ sessionID, instanceID: session.directory })
+    })
+
+    const prompt: (
+      input: PromptInput,
+      ownership?: SessionAdmission.Claim,
+    ) => Effect.Effect<SessionV1.WithParts, Image.Error | SessionAdmission.ControlInProgressError> = Effect.fn(
       "SessionPrompt.prompt",
-    )(function* (input: PromptInput) {
-      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
-      yield* revert.cleanup(session)
-      const message = yield* createUserMessage(input)
-      yield* sessions.touch(input.sessionID)
+    )(function* (input: PromptInput, ownership?: SessionAdmission.Claim) {
+      const claimed = ownership ?? (yield* claim(input.sessionID))
+      return yield* Effect.gen(function* () {
+        const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+        yield* revert.cleanup(session)
+        const message = yield* createUserMessage(input)
+        yield* sessions.touch(input.sessionID)
 
-      const permissions: PermissionV1.Rule[] = []
-      for (const [t, enabled] of Object.entries(input.tools ?? {})) {
-        permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
-      }
-      if (permissions.length > 0) {
-        session.permission = permissions
-        yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
-      }
+        const permissions: PermissionV1.Rule[] = []
+        for (const [t, enabled] of Object.entries(input.tools ?? {})) {
+          permissions.push({ permission: t, action: enabled ? "allow" : "deny", pattern: "*" })
+        }
+        if (permissions.length > 0) {
+          session.permission = permissions
+          yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
+        }
 
-      if (input.noReply === true) return message
-      return yield* loop({ sessionID: input.sessionID })
+        if (input.noReply === true) return message
+        return yield* loop({ sessionID: input.sessionID }, claimed)
+      }).pipe(Effect.ensuring(claimed.release))
     })
 
     const lastAssistant = Effect.fnUntraced(function* (sessionID: SessionID) {
@@ -1340,17 +1364,28 @@ const layer = Layer.effect(
       },
     )
 
-    const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
+    const loop: (
       input: LoopInput,
-    ) {
-      return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
-    })
+      ownership?: SessionAdmission.Claim,
+    ) => Effect.Effect<SessionV1.WithParts, SessionAdmission.ControlInProgressError> = Effect.fn("SessionPrompt.loop")(
+      function* (input: LoopInput, ownership?: SessionAdmission.Claim) {
+        const claimed = ownership ?? (yield* claim(input.sessionID))
+        return yield* state
+          .ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID), claimed.release)
+          .pipe(Effect.ensuring(claimed.release))
+      },
+    )
 
-    const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
+    const shell: (
+      input: ShellInput,
+    ) => Effect.Effect<SessionV1.WithParts, Session.BusyError | SessionAdmission.ControlInProgressError> = Effect.fn(
       "SessionPrompt.shell",
     )(function* (input: ShellInput) {
+      const claimed = yield* claim(input.sessionID)
       const ready = yield* Latch.make()
-      return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
+      return yield* state
+        .startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready, claimed.release)
+        .pipe(Effect.ensuring(claimed.release))
     })
 
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
@@ -1625,6 +1660,7 @@ export const node = LayerNode.make({
     EventV2Bridge.node,
     RuntimeFlags.node,
     Database.node,
+    SessionAdmission.node,
   ],
 })
 

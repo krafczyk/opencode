@@ -65,6 +65,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@opencode-ai/server/cors"
@@ -234,6 +235,7 @@ const app = LayerNode.group([
   Todo.node,
   Session.node,
   SessionProjector.node,
+  SessionAdmission.node,
   SessionStatus.node,
   BackgroundJob.node,
   RuntimeFlags.node,

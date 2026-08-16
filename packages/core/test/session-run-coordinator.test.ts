@@ -6,19 +6,26 @@ import { testEffect } from "./lib/effect"
 const it = testEffect(Layer.empty)
 
 describe("SessionRunCoordinator", () => {
-  it.effect("joins concurrent resumes for one key", () =>
+  it.effect("runs immediate and joined handoffs after coordinator ownership is visible", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const gate = yield* Deferred.make<void>()
+        const handedOff = yield* Deferred.make<void>()
         let runs = 0
+        let handoffs = 0
         const coordinator = yield* SessionRunCoordinator.make({
           drain: () => Effect.sync(() => runs++).pipe(Effect.andThen(Deferred.await(gate))),
         })
+        const handoff = Effect.gen(function* () {
+          expect(Array.from(yield* coordinator.active)).toEqual(["session"])
+          handoffs++
+          if (handoffs === 2) yield* Deferred.succeed(handedOff, undefined)
+        })
 
-        const first = yield* coordinator.run("session").pipe(Effect.forkChild)
+        const first = yield* coordinator.run("session", handoff).pipe(Effect.forkChild)
         yield* Effect.yieldNow
-        const second = yield* coordinator.run("session").pipe(Effect.forkChild)
-        yield* Effect.yieldNow
+        const second = yield* coordinator.run("session", handoff).pipe(Effect.forkChild)
+        yield* Deferred.await(handedOff)
 
         expect(runs).toBe(1)
         yield* Deferred.succeed(gate, undefined)
@@ -282,13 +289,14 @@ describe("SessionRunCoordinator", () => {
     ),
   )
 
-  it.effect("starts a resume registered during interruption cleanup", () =>
+  it.effect("runs a stopping-successor handoff after successor ownership is visible", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const firstStarted = yield* Deferred.make<void>()
         const cleanupStarted = yield* Deferred.make<void>()
         const cleanupGate = yield* Deferred.make<void>()
         const secondStarted = yield* Deferred.make<void>()
+        const handedOff = yield* Deferred.make<void>()
         const forces: boolean[] = []
         const coordinator = yield* SessionRunCoordinator.make<string, never>({
           drain: (_key, force) => {
@@ -308,8 +316,21 @@ describe("SessionRunCoordinator", () => {
         yield* Deferred.await(firstStarted)
         const interrupt = yield* coordinator.interrupt("session").pipe(Effect.forkChild)
         yield* Deferred.await(cleanupStarted)
-        const resumed = yield* coordinator.run("session").pipe(Effect.forkChild)
+        const resumed = yield* coordinator
+          .run(
+            "session",
+            coordinator.active.pipe(
+              Effect.tap((active) =>
+                Effect.sync(() => {
+                  expect(Array.from(active)).toEqual(["session"])
+                }),
+              ),
+              Effect.andThen(Deferred.succeed(handedOff, undefined)),
+            ),
+          )
+          .pipe(Effect.forkChild)
         yield* Deferred.succeed(cleanupGate, undefined)
+        yield* Deferred.await(handedOff)
         yield* Effect.all([Fiber.join(interrupt), Fiber.join(resumed)])
         yield* Deferred.await(secondStarted)
 
