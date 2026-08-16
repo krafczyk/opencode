@@ -19,6 +19,7 @@ const projectLayer = Layer.succeed(
         directory: AbsolutePath.make("/repo"),
         vcs: { type: "git", store: AbsolutePath.make("/repo/.git") },
       }),
+    origin: () => Effect.succeed(undefined),
     commit: () => Effect.void,
   }),
 )

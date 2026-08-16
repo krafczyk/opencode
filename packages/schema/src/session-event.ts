@@ -73,6 +73,11 @@ export const ModelSwitched = Event.define({
 })
 export type ModelSwitched = typeof ModelSwitched.Type
 
+/**
+ * Records a durable session location transition.
+ * `registerRoot` is set only by the no-worktree directory control so replay registers that root atomically with the
+ * selected session transition; ordinary moves retain their existing projection behavior.
+ */
 export const Moved = Event.define({
   type: "session.next.moved",
   ...options,
@@ -80,6 +85,7 @@ export const Moved = Event.define({
     ...Base,
     location: Location.Ref,
     subdirectory: RelativePath.pipe(optional),
+    registerRoot: Schema.Boolean.pipe(optional),
   },
 })
 export type Moved = typeof Moved.Type

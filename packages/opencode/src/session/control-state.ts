@@ -71,56 +71,67 @@ export interface Interface {
 /** Provides the shared process-local control-state observer. */
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionControlState") {}
 
-const layer = Layer.effect(
-  Service,
-  Effect.gen(function* () {
-    const admission = yield* SessionAdmission.Service
-    const execution = yield* SessionExecution.Service
-    const runState = yield* SessionRunState.Service
-    const status = yield* SessionStatus.Service
-    const permission = yield* Permission.Service
-    const question = yield* Question.Service
-    const background = yield* BackgroundJob.Service
+/** Optional observer hooks for deterministic control-state integration tests. */
+export interface LayerOptions {
+  readonly beforeSnapshot?: (input: SnapshotInput) => Effect.Effect<void>
+}
 
-    const snapshot = Effect.fn("SessionControlState.snapshot")(function* (input: SnapshotInput) {
-      const [admissionState, current, legacy, legacyStatus, permissions, questions, jobs] = yield* Effect.all([
-        admission.snapshot,
-        execution.active,
-        runState.active(input.sessionID),
-        status.get(input.sessionID),
-        permission.list(),
-        question.list(),
-        background.list(),
-      ])
-      const descendants = activeBackgroundJobs(input.sessionID, jobs)
-      const control: Control = admissionState.sessionControls.some((item) => item.sessionID === input.sessionID)
-        ? "session"
-        : admissionState.instanceControls.some((item) => item.instanceID === input.instanceID)
-          ? "instance"
-          : "none"
-      const claimed = admissionState.claims.some((item) => item.sessionID === input.sessionID)
-      const activity: Activity =
-        legacyStatus.type === "retry"
-          ? "retrying"
-          : current.has(input.sessionID) || legacy || legacyStatus.type === "busy" || claimed || descendants > 0
-            ? "active"
-            : "idle"
-      return {
-        observed: true as const,
-        activity,
-        pendingInputs: input.pendingInputs,
-        pendingInteractions: {
-          permission: permissions.filter((item) => item.sessionID === input.sessionID).length,
-          question: questions.filter((item) => item.sessionID === input.sessionID).length,
-        },
-        control,
-        backgroundJobs: descendants,
-      }
-    })
+/** Builds the process-local control-state observer, optionally with test instrumentation. */
+export const layerWith = (options?: LayerOptions) =>
+  Layer.effect(
+    Service,
+    Effect.gen(function* () {
+      const admission = yield* SessionAdmission.Service
+      const execution = yield* SessionExecution.Service
+      const runState = yield* SessionRunState.Service
+      const status = yield* SessionStatus.Service
+      const permission = yield* Permission.Service
+      const question = yield* Question.Service
+      const background = yield* BackgroundJob.Service
 
-    return Service.of({ snapshot })
-  }),
-)
+      const snapshot = Effect.fn("SessionControlState.snapshot")(function* (input: SnapshotInput) {
+        yield* options?.beforeSnapshot?.(input) ?? Effect.void
+        const [admissionState, current, legacy, legacyStatus, permissions, questions, jobs] = yield* Effect.all([
+          admission.snapshot,
+          execution.active,
+          runState.active(input.sessionID),
+          status.get(input.sessionID),
+          permission.list(),
+          question.list(),
+          background.list(),
+        ])
+        const descendants = activeBackgroundJobs(input.sessionID, jobs)
+        const control: Control = admissionState.sessionControls.some((item) => item.sessionID === input.sessionID)
+          ? "session"
+          : admissionState.instanceControls.some((item) => item.instanceID === input.instanceID)
+            ? "instance"
+            : "none"
+        const claimed = admissionState.claims.some((item) => item.sessionID === input.sessionID)
+        const activity: Activity =
+          legacyStatus.type === "retry"
+            ? "retrying"
+            : current.has(input.sessionID) || legacy || legacyStatus.type === "busy" || claimed || descendants > 0
+              ? "active"
+              : "idle"
+        return {
+          observed: true as const,
+          activity,
+          pendingInputs: input.pendingInputs,
+          pendingInteractions: {
+            permission: permissions.filter((item) => item.sessionID === input.sessionID).length,
+            question: questions.filter((item) => item.sessionID === input.sessionID).length,
+          },
+          control,
+          backgroundJobs: descendants,
+        }
+      })
+
+      return Service.of({ snapshot })
+    }),
+  )
+
+/** Default process-local control-state observer. */
+export const layer = layerWith()
 
 function activeBackgroundJobs(sessionID: SessionSchema.ID, jobs: ReadonlyArray<BackgroundJob.Info>) {
   const pending = new Set<string>([sessionID])
