@@ -192,8 +192,7 @@ describe("ChangeSessionDirectory", () => {
             {
               sessionID,
               location: Location.Ref.make({ directory: root }),
-              subdirectory: RelativePath.make("packages/core"),
-              registerRoot: true,
+              subdirectory: RelativePath.make("./packages/core"),
               timestamp: DateTime.makeUnsafe(1),
             },
             { commit: () => Effect.die("commit failed") },
@@ -237,8 +236,7 @@ describe("ChangeSessionDirectory", () => {
       const published = yield* events.publish(SessionEvent.Moved, {
         sessionID,
         location: Location.Ref.make({ directory: root }),
-        subdirectory: RelativePath.make("packages/core"),
-        registerRoot: true,
+        subdirectory: RelativePath.make("./packages/core"),
         timestamp: DateTime.makeUnsafe(1),
       })
       const serialized = yield* db.select().from(EventTable).where(eq(EventTable.id, published.id)).get()
@@ -355,8 +353,7 @@ describe("ChangeSessionDirectory", () => {
       const published = yield* events.publish(SessionEvent.Moved, {
         sessionID,
         location: Location.Ref.make({ directory: root }),
-        subdirectory: RelativePath.make("packages/core"),
-        registerRoot: true,
+        subdirectory: RelativePath.make("./packages/core"),
         timestamp: DateTime.makeUnsafe(1),
       })
       const serialized = yield* db.select().from(EventTable).where(eq(EventTable.id, published.id)).get()
