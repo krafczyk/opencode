@@ -166,6 +166,17 @@ describe("InstanceStore", () => {
     }),
   )
 
+  it.live("reports a failed replacement bootstrap to guarded controls", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      yield* store.load({ directory: dir })
+      yield* setBootstrap(Effect.die("replacement bootstrap failed"))
+
+      expect(yield* store.reloadForControl({ directory: dir })).toEqual({ type: "recovery_failed" })
+    }),
+  )
+
   it.live("stale dispose does not delete an in-flight reload", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
