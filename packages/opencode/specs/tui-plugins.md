@@ -236,6 +236,7 @@ Top-level API groups exposed to `tui(api, options, meta)`:
 - `api.tuiConfig`
 - `api.kv.get`, `set`, `ready`
 - `api.state`
+- `api.session.reconcile(sessionID)`
 - `api.theme.current`, `selected`, `has`, `set`, `install`, `mode`, `ready`
 - `api.client`
 - `api.event.on(type, handler)`
@@ -390,6 +391,12 @@ Mode pushes are automatically tracked by the plugin runtime. If a plugin is disa
   - `lsp()`
   - `mcp()`
 - `api.client` always reflects the current runtime client.
+- `api.session.reconcile(sessionID)` is the only plugin-facing cache repair API.
+  It refreshes the directory-filtered list, force-hydrates the selected session,
+  reconnects editor ownership to the server-returned directory, and repairs the
+  selected route. It creates no prompt or server mutation and does not expose
+  generic cache mutation to external plugins. If exact repair fails for the
+  selected session, the host returns home rather than leaving a stale route.
 - `api.event.on(type, handler)` subscribes to the TUI event stream and returns an unsubscribe function.
 - `api.renderer` exposes the raw `CliRenderer`.
 
