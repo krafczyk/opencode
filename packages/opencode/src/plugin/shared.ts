@@ -192,6 +192,17 @@ export async function resolvePathPluginTarget(spec: string) {
   throw new Error(`Plugin directory ${file} is missing package.json or index file`)
 }
 
+/**
+ * Verify an installed plugin package's OpenCode engine requirement.
+ *
+ * Managed MkChad suffixes identify packaging revisions, so compatibility uses
+ * their upstream API baseline. Missing metadata and local development versions
+ * skip admission; an incompatible valid release version throws an error.
+ *
+ * @param target Installed plugin file or directory used when `pkg` is omitted.
+ * @param opencodeVersion Full host version reported to diagnostics.
+ * @param pkg Optional package metadata already read by the caller.
+ */
 export async function checkPluginCompatibility(target: string, opencodeVersion: string, pkg?: PluginPackage) {
   if (!semver.valid(opencodeVersion) || semver.major(opencodeVersion) === 0) return
   const hit = pkg ?? (await readPluginPackage(target).catch(() => undefined))
