@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parsePluginSpecifier } from "../../src/plugin/shared"
+import { checkPluginCompatibility, parsePluginSpecifier } from "../../src/plugin/shared"
 
 describe("parsePluginSpecifier", () => {
   test("parses standard npm package without version", () => {
@@ -84,5 +84,23 @@ describe("parsePluginSpecifier", () => {
       pkg: "@opencode/acme",
       version: "latest",
     })
+  })
+})
+
+describe("checkPluginCompatibility", () => {
+  const plugin = {
+    dir: "/plugin",
+    pkg: "/plugin/package.json",
+    json: { engines: { opencode: "1.18.18" } },
+  }
+
+  test("uses the upstream baseline for managed MkChad versions", async () => {
+    await expect(checkPluginCompatibility("/plugin", "1.18.18-mkchad.3", plugin)).resolves.toBeUndefined()
+    await expect(checkPluginCompatibility("/plugin", "1.18.19-mkchad.1", plugin)).rejects.toThrow(
+      "Plugin requires opencode 1.18.18 but running 1.18.19-mkchad.1",
+    )
+    await expect(checkPluginCompatibility("/plugin", "1.18.18-stock.1", plugin)).rejects.toThrow(
+      "Plugin requires opencode 1.18.18 but running 1.18.18-stock.1",
+    )
   })
 })

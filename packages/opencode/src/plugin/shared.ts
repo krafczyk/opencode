@@ -5,6 +5,7 @@ import semver from "semver"
 import { Filesystem } from "@/util/filesystem"
 import { isRecord } from "@/util/record"
 import { Npm } from "@opencode-ai/core/npm"
+import { isManagedDistribution } from "@opencode-ai/core/installation/version"
 
 // Old npm package names for plugins that are now built-in
 export const DEPRECATED_PLUGIN_PACKAGES = ["opencode-openai-codex-auth", "opencode-copilot-auth"]
@@ -199,7 +200,8 @@ export async function checkPluginCompatibility(target: string, opencodeVersion: 
   if (!isRecord(engines)) return
   const range = engines.opencode
   if (typeof range !== "string") return
-  if (!semver.satisfies(opencodeVersion, range)) {
+  const version = isManagedDistribution(opencodeVersion) ? opencodeVersion.split("-mkchad.", 1)[0]! : opencodeVersion
+  if (!semver.satisfies(version, range)) {
     throw new Error(`Plugin requires opencode ${range} but running ${opencodeVersion}`)
   }
 }
