@@ -4,6 +4,7 @@ import { and, asc, desc, eq, isNotNull, isNull, ne, or } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 import { Database } from "../database/database"
 import { makeGlobalNode } from "../effect/app-node"
+import { FSUtil } from "../fs-util"
 import { AbsolutePath, optional } from "../schema"
 import { ProjectSchema } from "./schema"
 import { ProjectDirectoryTable } from "./sql"
@@ -12,6 +13,43 @@ import type { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
 export interface Directory {
   readonly directory: AbsolutePath
   readonly strategy?: string
+}
+
+/** Stable categories for a session directory relative to its project roots. */
+export type LocationClassification =
+  | "primary_worktree"
+  | "recognized_worktree"
+  | "registered_directory"
+  | "unregistered"
+
+/** The classification and containing root when a session directory belongs to a known project location. */
+export type Location =
+  | { readonly type: Exclude<LocationClassification, "unregistered">; readonly root: AbsolutePath }
+  | { readonly type: "unregistered" }
+
+/** Input roots used to classify a durable session directory without filesystem access. */
+export interface ClassifyInput {
+  readonly directory: AbsolutePath
+  readonly primary: AbsolutePath
+  readonly recognized: ReadonlyArray<AbsolutePath>
+  readonly registered: ReadonlyArray<AbsolutePath>
+}
+
+/**
+ * Classifies a durable directory using supplied project roots only.
+ * The most-specific exact-or-ancestor root wins; ties resolve primary, then recognized worktree,
+ * then registered directory. This has no filesystem side effects and returns `unregistered` when
+ * historical session data is outside every supplied root.
+ */
+export function classify(input: ClassifyInput): Location {
+  const candidates = [
+    { type: "primary_worktree" as const, root: input.primary, priority: 0 },
+    ...input.recognized.map((root) => ({ type: "recognized_worktree" as const, root, priority: 1 })),
+    ...input.registered.map((root) => ({ type: "registered_directory" as const, root, priority: 2 })),
+  ].filter((candidate) => FSUtil.contains(candidate.root, input.directory))
+  const match = candidates.toSorted((a, b) => b.root.length - a.root.length || a.priority - b.priority)[0]
+  if (!match) return { type: "unregistered" }
+  return { type: match.type, root: match.root }
 }
 
 export const CreateInput = Schema.Struct({
@@ -45,7 +83,8 @@ export const ListOutput = Schema.Array(
 export type ListOutput = typeof ListOutput.Type
 
 export interface Interface {
-  readonly list: (projectID: ProjectSchema.ID) => Effect.Effect<ReadonlyArray<Directory>>
+  /** Lists registered project directories, optionally within a caller-owned transaction. */
+  readonly list: (projectID: ProjectSchema.ID, tx?: Transaction) => Effect.Effect<ReadonlyArray<Directory>>
   readonly get: (input: {
     projectID: ProjectSchema.ID
     directory: AbsolutePath
@@ -97,8 +136,8 @@ const layer = Layer.effect(
       )
     })
 
-    const list = Effect.fn("ProjectDirectories.list")(function* (projectID: ProjectSchema.ID) {
-      const rows = yield* db
+    const list = Effect.fn("ProjectDirectories.list")(function* (projectID: ProjectSchema.ID, tx?: Transaction) {
+      const rows = yield* (tx ?? db)
         .select({ directory: ProjectDirectoryTable.directory, strategy: ProjectDirectoryTable.strategy })
         .from(ProjectDirectoryTable)
         .where(eq(ProjectDirectoryTable.project_id, projectID))
