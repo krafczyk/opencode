@@ -9,6 +9,8 @@ import { SessionID } from "./schema"
 import { SessionStatus } from "./status"
 
 export interface Interface {
+  /** Reports whether this instance currently owns legacy runner work for the session. */
+  readonly active: (sessionID: SessionID) => Effect.Effect<boolean>
   readonly assertNotBusy: (sessionID: SessionID) => Effect.Effect<void, Session.BusyError>
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   /** Starts or joins legacy work and invokes `handoff` after runner ownership is visible. */
@@ -78,6 +80,10 @@ const layer = Layer.effect(
       if (existing?.busy) yield* busyError(sessionID)
     })
 
+    const active = Effect.fn("SessionRunState.active")(function* (sessionID: SessionID) {
+      return (yield* InstanceState.get(state)).runners.get(sessionID)?.busy === true
+    })
+
     const cancel = Effect.fn("SessionRunState.cancel")(function* (sessionID: SessionID) {
       yield* cancelBackgroundJobs(background, sessionID)
       const data = yield* InstanceState.get(state)
@@ -110,7 +116,7 @@ const layer = Layer.effect(
         .pipe(Effect.catchTag("RunnerBusy", () => Effect.fail(busyError(sessionID))))
     })
 
-    return Service.of({ assertNotBusy, cancel, ensureRunning, startShell })
+    return Service.of({ active, assertNotBusy, cancel, ensureRunning, startShell })
   }),
 )
 
