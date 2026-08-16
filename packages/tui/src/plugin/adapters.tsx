@@ -8,6 +8,7 @@ import type { useTheme } from "../context/theme"
 import { Dialog as DialogUI, type useDialog } from "../ui/dialog"
 import type { useOpencodeKeymap } from "../keymap"
 import type { useKV } from "../context/kv"
+import type { useEditorContext } from "../context/editor"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { DialogPrompt } from "../ui/dialog-prompt"
@@ -31,6 +32,7 @@ type Input = {
   event: ReturnType<typeof useEvent>
   sdk: ReturnType<typeof useSDK>
   sync: ReturnType<typeof useSync>
+  editor: ReturnType<typeof useEditorContext>
   theme: ReturnType<typeof useTheme>
   toast: ReturnType<typeof useToast>
   renderer: TuiPluginApi["renderer"]
@@ -298,6 +300,23 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
       },
     },
     state: stateApi(input.sync),
+    session: {
+      async reconcile(sessionID) {
+        try {
+          const session = await input.sync.session.reconcile(sessionID)
+          input.editor.reconnect(session.directory)
+          if (input.route.data.type === "session" && input.route.data.sessionID === sessionID) {
+            input.route.navigate({ type: "session", sessionID })
+          }
+          return { directory: session.directory }
+        } catch (error) {
+          if (input.route.data.type === "session" && input.route.data.sessionID === sessionID) {
+            input.route.navigate({ type: "home" })
+          }
+          throw error
+        }
+      },
+    },
     get client() {
       return input.sdk.client
     },

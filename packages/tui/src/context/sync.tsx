@@ -148,7 +148,7 @@ export const {
     const sdk = useSDK()
 
     const fullSyncedSessions = new Set<string>()
-    const syncingSessions = new Map<string, Promise<void>>()
+    const syncingSessions = new Map<string, Promise<Session>>()
     const hydratingSessions = new Map<string, { messages: Set<string>; parts: Set<string> }>()
     const touchMessage = (sessionID: string, messageID: string) => {
       hydratingSessions.get(sessionID)?.messages.add(messageID)
@@ -591,8 +591,15 @@ export const {
           if (last.role === "user") return "working"
           return last.time.completed ? "idle" : "working"
         },
-        async sync(sessionID: string) {
-          if (fullSyncedSessions.has(sessionID)) return
+        /**
+         * Hydrate one session's detail cache from the server.
+         *
+         * Forced hydration bypasses the one-shot guard for server controls that
+         * changed a selected session. It preserves concurrent live updates and
+         * returns the authoritative session record without creating a prompt.
+         */
+        async sync(sessionID: string, options: { force?: boolean } = {}): Promise<Session | undefined> {
+          if (!options.force && fullSyncedSessions.has(sessionID)) return result.session.get(sessionID)
           const syncing = syncingSessions.get(sessionID)
           if (syncing) return syncing
           const tracker = { messages: new Set<string>(), parts: new Set<string>() }
@@ -658,12 +665,26 @@ export const {
               }),
             )
             fullSyncedSessions.add(sessionID)
+            return session.data!
           })().finally(() => {
             syncingSessions.delete(sessionID)
             hydratingSessions.delete(sessionID)
           })
           syncingSessions.set(sessionID, task)
           return task
+        },
+        /**
+         * Reconcile one server-controlled session with TUI-owned caches.
+         *
+         * The directory-filtered list refreshes first, then forced exact
+         * hydration pins the selected detail even when it is outside the list
+         * scope. No server mutation or prompt submission occurs here.
+         */
+        async reconcile(sessionID: string) {
+          await result.session.refresh()
+          const session = await result.session.sync(sessionID, { force: true })
+          if (!session) throw new Error("Selected session was not returned during reconciliation")
+          return session
         },
       },
       bootstrap,

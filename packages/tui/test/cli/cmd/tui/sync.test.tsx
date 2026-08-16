@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import { describe, expect, test } from "bun:test"
 import { tmpdir } from "../../../fixture/fixture"
-import { mount, wait } from "./sync-fixture"
+import { json, mount, wait } from "./sync-fixture"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 
 function branchEvent(branch: string, workspace?: string): GlobalEvent {
@@ -58,6 +58,43 @@ describe("tui sync", () => {
       await wait(() => sync.data.vcs?.branch === "feature")
 
       expect(sync.data.vcs?.branch).toBe("feature")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
+  test("control reconciliation refreshes the filtered list and retains the exact session outside its scope", async () => {
+    await using tmp = await tmpdir()
+    await Bun.write(`${tmp.path}/kv.json`, "{}")
+    let lists = 0
+    const session = {
+      id: "ses_control_reconcile",
+      title: "moved",
+      time: { created: 0, updated: 0 },
+      version: "1.18.18",
+      directory: "/tmp/opencode/other-worktree",
+    }
+    const { app, sync } = await mount((url) => {
+      if (url.pathname === "/session") {
+        lists += 1
+        return json([])
+      }
+      if (url.pathname === `/session/${session.id}`) return json(session)
+      if (
+        [`/session/${session.id}/message`, `/session/${session.id}/todo`, `/session/${session.id}/diff`].includes(
+          url.pathname,
+        )
+      ) {
+        return json([])
+      }
+      return undefined
+    }, tmp.path)
+
+    try {
+      await sync.session.reconcile(session.id)
+
+      expect(lists).toBeGreaterThan(1)
+      expect(sync.session.get(session.id)).toMatchObject({ directory: session.directory })
     } finally {
       app.renderer.destroy()
     }
