@@ -1,5 +1,3 @@
-export * as SessionInspection from "./inspection"
-
 import { SessionControlState } from "@/session/control-state"
 import { InstanceRef } from "@/effect/instance-ref"
 import { Project } from "@/project/project"
@@ -11,9 +9,10 @@ import { ProjectSchema } from "@opencode-ai/core/project/schema"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath, NonNegativeInt } from "@opencode-ai/core/schema"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
+import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionStore } from "@opencode-ai/core/session/store"
-import { SessionInputTable, SessionTable } from "@opencode-ai/core/session/sql"
-import { and, eq, isNull, sql } from "drizzle-orm"
+import { SessionTable } from "@opencode-ai/core/session/sql"
+import { eq } from "drizzle-orm"
 import { Context, Effect, Layer, Schema } from "effect"
 
 /** Server-defined classification of a session's durable directory. */
@@ -26,11 +25,30 @@ export const LocationClassification = Schema.Literals([
 export type LocationClassification = typeof LocationClassification.Type
 
 /** A server-known project directory or worktree available to clients without local filesystem interpretation. */
-export const Directory = Schema.Struct({
+export class Directory extends Schema.Class<Directory>("SessionInspection.Directory")({
   directory: AbsolutePath,
   classification: LocationClassification,
-}).annotate({ identifier: "SessionInspection.Directory" })
-export type Directory = typeof Directory.Type
+}) {}
+
+class SessionInfo extends Schema.Class<SessionInfo>("SessionInspection.SessionInfo")({
+  id: SessionSchema.ID,
+  directory: AbsolutePath,
+}) {}
+
+class ProjectInfo extends Schema.Class<ProjectInfo>("SessionInspection.ProjectInfo")({
+  id: ProjectSchema.ID,
+  primaryDirectory: AbsolutePath,
+}) {}
+
+class Location extends Schema.Class<Location>("SessionInspection.Location")({
+  classification: LocationClassification,
+  root: Schema.optional(AbsolutePath),
+}) {}
+
+class Counts extends Schema.Class<Counts>("SessionInspection.Counts")({
+  userPrompts: NonNegativeInt,
+  completedAssistantResponses: NonNegativeInt,
+}) {}
 
 /**
  * A bounded aggregate snapshot of one selected session.
@@ -38,27 +56,14 @@ export type Directory = typeof Directory.Type
  * state attached afterward. It exposes no message, prompt, interaction, job-output, model, header,
  * credential, or permission/question body content.
  */
-export const Snapshot = Schema.Struct({
-  session: Schema.Struct({
-    id: SessionSchema.ID,
-    directory: AbsolutePath,
-  }),
-  project: Schema.Struct({
-    id: ProjectSchema.ID,
-    primaryDirectory: AbsolutePath,
-  }),
-  location: Schema.Struct({
-    classification: LocationClassification,
-    root: Schema.optional(AbsolutePath),
-  }),
+export class Snapshot extends Schema.Class<Snapshot>("SessionInspection.Snapshot")({
+  session: SessionInfo,
+  project: ProjectInfo,
+  location: Location,
   directories: Schema.Array(Directory),
-  counts: Schema.Struct({
-    userPrompts: NonNegativeInt,
-    completedAssistantResponses: NonNegativeInt,
-  }),
+  counts: Counts,
   control: SessionControlState.Snapshot,
-}).annotate({ identifier: "SessionInspection.Snapshot" })
-export type Snapshot = typeof Snapshot.Type
+}) {}
 
 /** Returned when the requested session no longer has a durable row. */
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("SessionInspection.NotFoundError", {
@@ -101,16 +106,9 @@ const layer = Layer.effect(
           const [registered, counts, pending] = yield* Effect.all([
             directories.list(session.projectID, tx),
             sessions.counts(sessionID, tx),
-            tx
-              .select({
-                steer: sql<number>`coalesce(sum(case when ${SessionInputTable.delivery} = 'steer' and ${SessionInputTable.promoted_seq} is null then 1 else 0 end), 0)`,
-                queue: sql<number>`coalesce(sum(case when ${SessionInputTable.delivery} = 'queue' and ${SessionInputTable.promoted_seq} is null then 1 else 0 end), 0)`,
-              })
-              .from(SessionInputTable)
-              .where(and(eq(SessionInputTable.session_id, sessionID), isNull(SessionInputTable.promoted_seq)))
-              .get(),
+            SessionInput.pendingCounts(tx, sessionID),
           ])
-          return { session, project, registered, counts, pending: pending ?? { steer: 0, queue: 0 } }
+          return { session, project, registered, counts, pending }
         }),
       )
       const durableResult = yield* transaction.pipe(
@@ -142,9 +140,9 @@ const layer = Layer.effect(
         })
       const sessionDirectory = AbsolutePath.make(durable.session.directory)
       const location = classify(sessionDirectory)
-      const available = [primaryDirectory, ...recognized.toSorted(), ...registered.toSorted()]
-        .filter((directory, index, values) => values.indexOf(directory) === index)
-        .map((directory) => ({ directory, classification: classify(directory).type }))
+      const available = [...new Set([primaryDirectory, ...recognized.toSorted(), ...registered.toSorted()])].map(
+        (directory) => new Directory({ directory, classification: classify(directory).type }),
+      )
       const control = yield* controlState
         .snapshot({
           sessionID,
@@ -158,17 +156,17 @@ const layer = Layer.effect(
             project: durable.project,
           }),
         )
-      return {
-        session: { id: durable.session.id, directory: sessionDirectory },
-        project: { id: durable.project.id, primaryDirectory },
+      return new Snapshot({
+        session: new SessionInfo({ id: durable.session.id, directory: sessionDirectory }),
+        project: new ProjectInfo({ id: durable.project.id, primaryDirectory }),
         location:
           location.type === "unregistered"
-            ? { classification: location.type }
-            : { classification: location.type, root: location.root },
+            ? new Location({ classification: location.type })
+            : new Location({ classification: location.type, root: location.root }),
         directories: available,
-        counts: durable.counts,
+        counts: new Counts(durable.counts),
         control,
-      }
+      })
     })
 
     return Service.of({ inspect })
@@ -180,3 +178,5 @@ export const node = LayerNode.make({
   layer,
   deps: [Database.node, Git.node, ProjectDirectories.node, SessionStore.node, SessionControlState.node],
 })
+
+export * as SessionInspection from "./inspection"

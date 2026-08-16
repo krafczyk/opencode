@@ -3,15 +3,13 @@ import { Command } from "@/command"
 import * as InstanceState from "@/effect/instance-state"
 import { Format } from "@/format"
 import { Global } from "@opencode-ai/core/global"
-import { AbsolutePath } from "@opencode-ai/core/schema"
 import { LSP } from "@/lsp/lsp"
 import { Vcs } from "@/project/vcs"
-import { ProjectControl } from "@/project/control"
 import { Skill } from "@/skill"
 import { Effect } from "effect"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { ApiVcsApplyError, GuardedReloadPayload } from "../groups/instance"
+import { ApiVcsApplyError } from "../groups/instance"
 import { markInstanceForDisposal } from "../lifecycle"
 
 export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance", (handlers) =>
@@ -22,18 +20,10 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
     const lsp = yield* LSP.Service
     const skill = yield* Skill.Service
     const vcs = yield* Vcs.Service
-    const control = yield* ProjectControl.Service
 
     const dispose = Effect.fn("InstanceHttpApi.dispose")(function* () {
       yield* markInstanceForDisposal(yield* InstanceState.context)
       return true
-    })
-
-    const reload = Effect.fn("InstanceHttpApi.reload")(function* (ctx: { payload: typeof GuardedReloadPayload.Type }) {
-      return yield* control.reload({
-        sessionID: ctx.payload.sessionID,
-        directory: AbsolutePath.make(yield* InstanceState.directory),
-      })
     })
 
     const getPath = Effect.fn("InstanceHttpApi.path")(function* () {
@@ -105,7 +95,6 @@ export const instanceHandlers = HttpApiBuilder.group(InstanceHttpApi, "instance"
 
     return handlers
       .handle("dispose", dispose)
-      .handle("reload", reload)
       .handle("path", getPath)
       .handle("vcs", getVcs)
       .handle("vcsStatus", getVcsStatus)

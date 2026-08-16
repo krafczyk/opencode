@@ -398,11 +398,14 @@ describe("session HttpApi", () => {
         const response = yield* request(`/session/${session.id}/inspection`, {
           headers: { "x-opencode-directory": test.directory },
         })
+        const inspection = yield* responseJson(response)
 
-        expect(response.status).toBe(200)
-        expect(yield* responseJson(response)).toMatchObject({
-          session: { id: session.id, directory: test.directory },
-          counts: { userPrompts: 0, completedAssistantResponses: 0 },
+        expect({ status: response.status, body: inspection }).toMatchObject({
+          status: 200,
+          body: {
+            session: { id: session.id, directory: test.directory },
+            counts: { userPrompts: 0, completedAssistantResponses: 0 },
+          },
         })
 
         const directory = yield* request(pathFor(SessionPaths.changeDirectory, { sessionID: session.id }), {

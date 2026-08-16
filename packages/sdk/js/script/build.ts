@@ -82,7 +82,14 @@ const historyTypesPatched = generatedTypes.replace(
 if (historyTypesPatched === generatedTypes) {
   throw new Error("Session history numeric query patch did not apply")
 }
-await Bun.write("./src/v2/gen/types.gen.ts", historyTypesPatched)
+const controlTypesPatched = historyTypesPatched.replace(
+  /(export type SessionChangeDirectoryData = \{\s*body)\?:/,
+  "$1:",
+)
+if (controlTypesPatched === historyTypesPatched) {
+  throw new Error("Session directory control required body patch did not apply")
+}
+await Bun.write("./src/v2/gen/types.gen.ts", controlTypesPatched)
 
 const generatedSdk = await Bun.file("./src/v2/gen/sdk.gen.ts").text()
 const historySdkPatched = generatedSdk.replace(
@@ -92,7 +99,14 @@ const historySdkPatched = generatedSdk.replace(
 if (historySdkPatched === generatedSdk) {
   throw new Error("Session history numeric SDK patch did not apply")
 }
-await Bun.write("./src/v2/gen/sdk.gen.ts", historySdkPatched)
+const controlSdkPatched = historySdkPatched.replace(
+  /(sessionControlChangeDirectoryPayload)\?:/,
+  "$1:",
+)
+if (controlSdkPatched === historySdkPatched) {
+  throw new Error("Session directory control required body SDK patch did not apply")
+}
+await Bun.write("./src/v2/gen/sdk.gen.ts", controlSdkPatched)
 
 // Patch a @hey-api/openapi-ts codegen bug: SseFn incorrectly passes the
 // endpoint's TError into the second generic of ServerSentEventsResult, which

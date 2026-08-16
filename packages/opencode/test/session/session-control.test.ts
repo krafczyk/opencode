@@ -11,6 +11,8 @@ import { SessionStatus } from "../../src/session/status"
 import { BackgroundJob } from "../../src/background/job"
 import { Permission } from "../../src/permission"
 import { Question } from "../../src/question"
+import { InstanceBootstrap } from "../../src/project/bootstrap-service"
+import { InstanceStore } from "../../src/project/instance-store"
 import { ChangeSessionDirectory } from "@opencode-ai/core/control-plane/change-session-directory"
 import { MoveSession } from "@opencode-ai/core/control-plane/move-session"
 import { Database } from "@opencode-ai/core/database/database"
@@ -54,10 +56,17 @@ const services = LayerNode.group([
   CrossSpawnSpawner.node,
   MoveSession.node,
 ])
-const it = testEffect(AppNodeBuilder.build(services, [[SessionExecution.node, SessionExecution.noopLayer]]))
+const bootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
+const it = testEffect(
+  AppNodeBuilder.build(services, [
+    [InstanceStore.bootstrapNode, bootstrap],
+    [SessionExecution.node, SessionExecution.noopLayer],
+  ]),
+)
 const currentSessionID = SessionSchema.ID.make("ses_directory_current_active")
 const current = testEffect(
   AppNodeBuilder.build(services, [
+    [InstanceStore.bootstrapNode, bootstrap],
     [
       SessionExecution.node,
       Layer.succeed(
@@ -75,6 +84,7 @@ const current = testEffect(
 const currentReloadSessionID = SessionSchema.ID.make("ses_context_reload_current")
 const currentReload = testEffect(
   AppNodeBuilder.build(services, [
+    [InstanceStore.bootstrapNode, bootstrap],
     [
       SessionExecution.node,
       Layer.effect(
@@ -95,6 +105,7 @@ const currentReload = testEffect(
 const failingReloadSessionID = SessionSchema.ID.make("ses_context_reload_failed")
 const failingReload = testEffect(
   AppNodeBuilder.build(services, [
+    [InstanceStore.bootstrapNode, bootstrap],
     [
       SessionExecution.node,
       Layer.succeed(
@@ -112,6 +123,7 @@ const failingReload = testEffect(
 const timedOutReloadSessionID = SessionSchema.ID.make("ses_context_reload_timeout")
 const timedOutReload = testEffect(
   AppNodeBuilder.build(services, [
+    [InstanceStore.bootstrapNode, bootstrap],
     [
       SessionExecution.node,
       Layer.succeed(
@@ -142,6 +154,7 @@ const raceControlState = LayerNode.make({
 })
 const race = testEffect(
   AppNodeBuilder.build(services, [
+    [InstanceStore.bootstrapNode, bootstrap],
     [SessionExecution.node, SessionExecution.noopLayer],
     [SessionControlState.node, raceControlState],
   ]),
@@ -152,6 +165,8 @@ describe("SessionControl.changeDirectory", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const control = yield* SessionControl.Service
+      const status = yield* SessionStatus.Service
       const sessionID = SessionSchema.ID.make("ses_directory_noop")
       const directory = AbsolutePath.make(test.directory)
       yield* db
@@ -170,9 +185,9 @@ describe("SessionControl.changeDirectory", () => {
           version: "test",
         })
         .run()
-      yield* (yield* SessionStatus.Service).set(sessionID, { type: "busy" })
+      yield* status.set(sessionID, { type: "busy" })
 
-      const result = yield* (yield* SessionControl.Service).changeDirectory({
+      const result = yield* control.changeDirectory({
         sessionID,
         expectedSource: directory,
         destination: directory,
@@ -189,6 +204,7 @@ describe("SessionControl.changeDirectory", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const control = yield* SessionControl.Service
       const directory = AbsolutePath.make(test.directory)
       yield* db
         .insert(ProjectTable)
@@ -207,7 +223,7 @@ describe("SessionControl.changeDirectory", () => {
         })
         .run()
       expect(
-        yield* (yield* SessionControl.Service).changeDirectory({
+        yield* control.changeDirectory({
           sessionID: currentSessionID,
           expectedSource: directory,
           destination: directory,
@@ -243,6 +259,7 @@ describe("SessionControl.changeDirectory", () => {
           .run()
       const control = yield* SessionControl.Service
       const status = yield* SessionStatus.Service
+      const jobs = yield* BackgroundJob.Service
 
       const retrying = SessionSchema.ID.make("ses_directory_retrying")
       yield* insert(retrying, "retrying")
@@ -309,7 +326,7 @@ describe("SessionControl.changeDirectory", () => {
       const jobSession = SessionSchema.ID.make("ses_directory_descendant")
       yield* insert(jobSession, "descendant")
       const release = yield* Deferred.make<void>()
-      yield* (yield* BackgroundJob.Service).start({
+      yield* jobs.start({
         type: "task",
         metadata: { parentSessionId: jobSession },
         run: Deferred.await(release).pipe(Effect.as("")),
@@ -406,6 +423,7 @@ describe("SessionControl.changeDirectory", () => {
         yield* Effect.promise(() => fs.mkdir(destination, { recursive: true }))
         yield* Effect.promise(() => $`git init`.cwd(root).quiet())
         const control = yield* SessionControl.Service
+        const sessions = yield* SessionStore.Service
         expect(yield* control.changeDirectory({ sessionID, expectedSource: source, destination })).toEqual({
           type: "refused",
           reason: "origin_missing",
@@ -415,7 +433,7 @@ describe("SessionControl.changeDirectory", () => {
           type: "refused",
           reason: "origin_mismatch",
         })
-        expect(yield* (yield* SessionStore.Service).get(sessionID)).toMatchObject({ location: { directory: source } })
+        expect(yield* sessions.get(sessionID)).toMatchObject({ location: { directory: source } })
       }),
     { git: true },
   )
@@ -427,6 +445,9 @@ describe("SessionControl.changeDirectory", () => {
         const test = yield* TestInstance
         const { db } = yield* Database.Service
         const project = yield* Project.Service
+        const directories = yield* ProjectDirectories.Service
+        const move = yield* MoveSession.Service
+        const sessions = yield* SessionStore.Service
         const source = AbsolutePath.make(test.directory)
         const projectID = (yield* project.resolve(source)).id
         const sessionID = SessionSchema.ID.make("ses_directory_legacy_race")
@@ -462,24 +483,24 @@ describe("SessionControl.changeDirectory", () => {
             version: "test",
           })
           .run()
-        yield* (yield* ProjectDirectories.Service).create({ projectID, directory: root })
+        yield* directories.create({ projectID, directory: root })
         const control = yield* SessionControl.Service
         const directoryChange = yield* control
           .changeDirectory({ sessionID, expectedSource: source, destination })
           .pipe(Effect.forkScoped)
         yield* Deferred.await(entered)
-        const legacyMove = yield* (yield* MoveSession.Service)
+        const legacyMove = yield* move
           .moveSession({ sessionID, destination: { directory: source } })
           .pipe(Effect.exit, Effect.forkScoped)
         yield* Effect.yieldNow
-        expect(yield* (yield* SessionStore.Service).get(sessionID)).toMatchObject({ location: { directory: source } })
+        expect(yield* sessions.get(sessionID)).toMatchObject({ location: { directory: source } })
         expect(yield* Fiber.join(legacyMove)).toMatchObject({ _tag: "Failure" })
         yield* Deferred.succeed(release, undefined)
         expect(yield* Fiber.join(directoryChange)).toMatchObject({
           type: "completed",
           session: { location: { directory: destination } },
         })
-        expect(yield* (yield* SessionStore.Service).get(sessionID)).toMatchObject({
+        expect(yield* sessions.get(sessionID)).toMatchObject({
           location: { directory: destination },
         })
       }),
@@ -492,6 +513,9 @@ describe("SessionControl.changeDirectory", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const { db } = yield* Database.Service
+        const directories = yield* ProjectDirectories.Service
+        const control = yield* SessionControl.Service
+        const sessions = yield* SessionStore.Service
         const source = AbsolutePath.make(test.directory)
         const sessionID = SessionSchema.ID.make("ses_directory_deletion_race")
         const root = AbsolutePath.make(path.join(test.directory, "registered"))
@@ -521,15 +545,15 @@ describe("SessionControl.changeDirectory", () => {
             version: "test",
           })
           .run()
-        yield* (yield* ProjectDirectories.Service).create({ projectID: Project.ID.global, directory: root })
-        const changing = yield* (yield* SessionControl.Service)
+        yield* directories.create({ projectID: Project.ID.global, directory: root })
+        const changing = yield* control
           .changeDirectory({ sessionID, expectedSource: source, destination })
           .pipe(Effect.forkScoped)
         yield* Deferred.await(entered)
         yield* db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
         yield* Deferred.succeed(release, undefined)
         expect(yield* Fiber.join(changing)).toEqual({ type: "precommit_failed" })
-        expect(yield* (yield* SessionStore.Service).get(sessionID)).toBeUndefined()
+        expect(yield* sessions.get(sessionID)).toBeUndefined()
       }),
     { git: true },
   )
@@ -544,6 +568,7 @@ describe("SessionControl.changeDirectory", () => {
         const root = AbsolutePath.make(`${test.directory}-directory-registration-race`)
         const destination = AbsolutePath.make(path.join(root, "nested"))
         const project = yield* Project.Service
+        const directories = yield* ProjectDirectories.Service
         const projectID = (yield* project.resolve(source)).id
         const entered = yield* Deferred.make<void>()
         const release = yield* Deferred.make<void>()
@@ -601,9 +626,9 @@ describe("SessionControl.changeDirectory", () => {
           type: "completed",
           session: { location: { directory: destination } },
         })
-        expect(
-          (yield* (yield* ProjectDirectories.Service).list(projectID)).filter((item) => item.directory === root),
-        ).toEqual([{ directory: root, strategy: undefined }])
+        expect((yield* directories.list(projectID)).filter((item) => item.directory === root)).toEqual([
+          { directory: root, strategy: undefined },
+        ])
       }),
     { git: true },
   )
@@ -612,6 +637,8 @@ describe("SessionControl.changeDirectory", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const directories = yield* ProjectDirectories.Service
+      const control = yield* SessionControl.Service
       const sessionID = SessionSchema.ID.make("ses_directory_registered")
       const source = AbsolutePath.make(test.directory)
       const root = AbsolutePath.make(path.join(test.directory, "registered"))
@@ -633,9 +660,9 @@ describe("SessionControl.changeDirectory", () => {
           version: "test",
         })
         .run()
-      yield* (yield* ProjectDirectories.Service).create({ projectID: Project.ID.global, directory: root })
+      yield* directories.create({ projectID: Project.ID.global, directory: root })
 
-      const result = yield* (yield* SessionControl.Service).changeDirectory({
+      const result = yield* control.changeDirectory({
         sessionID,
         expectedSource: source,
         destination,
@@ -650,6 +677,10 @@ describe("SessionControl.changeDirectory", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const directories = yield* ProjectDirectories.Service
+      const status = yield* SessionStatus.Service
+      const control = yield* SessionControl.Service
+      const sessions = yield* SessionStore.Service
       const sessionID = SessionSchema.ID.make("ses_directory_blocked")
       const source = AbsolutePath.make(test.directory)
       const destination = AbsolutePath.make(path.join(test.directory, "registered-blocked"))
@@ -670,17 +701,67 @@ describe("SessionControl.changeDirectory", () => {
           version: "test",
         })
         .run()
-      yield* (yield* ProjectDirectories.Service).create({ projectID: Project.ID.global, directory: destination })
-      yield* (yield* SessionStatus.Service).set(sessionID, { type: "busy" })
+      yield* directories.create({ projectID: Project.ID.global, directory: destination })
+      yield* status.set(sessionID, { type: "busy" })
 
-      const result = yield* (yield* SessionControl.Service).changeDirectory({
+      const result = yield* control.changeDirectory({
         sessionID,
         expectedSource: source,
         destination,
       })
 
       expect(result).toEqual({ type: "refused", reason: "blocked" })
-      expect(yield* (yield* SessionStore.Service).get(sessionID)).toMatchObject({ location: { directory: source } })
+      expect(yield* sessions.get(sessionID)).toMatchObject({ location: { directory: source } })
+    }),
+  )
+
+  it.instance("refuses pending steer and queue inputs before changing directories", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const source = AbsolutePath.make(test.directory)
+      const destination = AbsolutePath.make(path.join(test.directory, "registered-pending"))
+      const directories = yield* ProjectDirectories.Service
+      const control = yield* SessionControl.Service
+      const sessions = yield* SessionStore.Service
+      yield* Effect.promise(() => fs.mkdir(destination))
+      yield* db
+        .insert(ProjectTable)
+        .values({ id: Project.ID.global, worktree: source, sandboxes: [] })
+        .onConflictDoNothing()
+        .run()
+      yield* directories.create({ projectID: Project.ID.global, directory: destination })
+
+      for (const delivery of ["steer", "queue"] as const) {
+        const sessionID = SessionSchema.ID.make(`ses_directory_pending_${delivery}`)
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: sessionID,
+            project_id: Project.ID.global,
+            slug: `pending-${delivery}`,
+            directory: source,
+            title: `pending-${delivery}`,
+            version: "test",
+          })
+          .run()
+        yield* db
+          .insert(SessionInputTable)
+          .values({
+            id: SessionMessage.ID.make(`msg_directory_pending_${delivery}`),
+            session_id: sessionID,
+            prompt: Prompt.make({ text: delivery }),
+            delivery,
+            admitted_seq: 0,
+          })
+          .run()
+
+        expect(yield* control.changeDirectory({ sessionID, expectedSource: source, destination })).toEqual({
+          type: "refused",
+          reason: "blocked",
+        })
+        expect(yield* sessions.get(sessionID)).toMatchObject({ location: { directory: source } })
+      }
     }),
   )
 
@@ -690,6 +771,8 @@ describe("SessionControl.changeDirectory", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const { db } = yield* Database.Service
+        const control = yield* SessionControl.Service
+        const directories = yield* ProjectDirectories.Service
         const sessionID = SessionSchema.ID.make("ses_directory_origin")
         const source = AbsolutePath.make(test.directory)
         const root = AbsolutePath.make(`${test.directory}-directory-control-destination`)
@@ -737,7 +820,7 @@ describe("SessionControl.changeDirectory", () => {
           })
           .run()
 
-        const result = yield* (yield* SessionControl.Service).changeDirectory({
+        const result = yield* control.changeDirectory({
           sessionID,
           expectedSource: source,
           destination,
@@ -755,9 +838,7 @@ describe("SessionControl.changeDirectory", () => {
             destinationIgnored: await fs.readFile(path.join(destination, "ignored.txt")),
           })),
         ).toEqual(bytes)
-        expect(yield* (yield* ProjectDirectories.Service).list(Project.ID.global)).toEqual([
-          { directory: root, strategy: undefined },
-        ])
+        expect(yield* directories.list(Project.ID.global)).toEqual([{ directory: root, strategy: undefined }])
       }),
     { git: true },
   )
@@ -768,6 +849,8 @@ describe("SessionControl.reloadContext", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const control = yield* SessionControl.Service
+      const sessions = yield* SessionStore.Service
       const directory = AbsolutePath.make(test.directory)
       const sessionID = SessionSchema.ID.make("ses_context_reload_idle")
       const unrelated = SessionSchema.ID.make("ses_context_reload_unrelated")
@@ -794,10 +877,10 @@ describe("SessionControl.reloadContext", () => {
         .values([sessionID, unrelated].map((id) => ({ session_id: id, baseline: id, snapshot: {}, baseline_seq: 0 })))
         .run()
 
-      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID })
+      const result = yield* control.reloadContext({ sessionID })
 
       expect(result).toEqual({ type: "idle_complete" })
-      expect(yield* (yield* SessionStore.Service).get(sessionID)).toMatchObject({
+      expect(yield* sessions.get(sessionID)).toMatchObject({
         id: sessionID,
         projectID: Project.ID.global,
         location: { directory },
@@ -848,6 +931,7 @@ describe("SessionControl.reloadContext", () => {
           .run()
         const gate = yield* Deferred.make<void>()
         const run = yield* SessionRunState.Service
+        const control = yield* SessionControl.Service
         yield* run
           .ensureRunning(
             currentReloadSessionID,
@@ -860,7 +944,7 @@ describe("SessionControl.reloadContext", () => {
           "legacy runner never became active",
         )
 
-        const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: currentReloadSessionID })
+        const result = yield* control.reloadContext({ sessionID: currentReloadSessionID })
 
         expect(result).toEqual({ type: "interrupted_complete" })
         expect(yield* run.active(currentReloadSessionID)).toBe(false)
@@ -902,6 +986,7 @@ describe("SessionControl.reloadContext", () => {
         .run()
       const gate = yield* Deferred.make<void>()
       const run = yield* SessionRunState.Service
+      const control = yield* SessionControl.Service
       yield* run
         .ensureRunning(
           sessionID,
@@ -914,7 +999,7 @@ describe("SessionControl.reloadContext", () => {
         "legacy runner never became active",
       )
 
-      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID })
+      const result = yield* control.reloadContext({ sessionID })
 
       expect(result).toEqual({ type: "interrupted_complete" })
       expect(yield* run.active(sessionID)).toBe(false)
@@ -932,6 +1017,8 @@ describe("SessionControl.reloadContext", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const control = yield* SessionControl.Service
+      const admission = yield* SessionAdmission.Service
       const directory = AbsolutePath.make(test.directory)
       yield* db
         .insert(ProjectTable)
@@ -954,7 +1041,7 @@ describe("SessionControl.reloadContext", () => {
         .values({ session_id: failingReloadSessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
         .run()
 
-      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: failingReloadSessionID })
+      const result = yield* control.reloadContext({ sessionID: failingReloadSessionID })
 
       expect(result).toEqual({ type: "failed_before_reset" })
       expect(
@@ -964,7 +1051,7 @@ describe("SessionControl.reloadContext", () => {
           .where(eq(SessionContextEpochTable.session_id, failingReloadSessionID))
           .get(),
       ).toMatchObject({ baseline: "old" })
-      const claim = yield* (yield* SessionAdmission.Service).claim({
+      const claim = yield* admission.claim({
         sessionID: failingReloadSessionID,
         instanceID: directory,
       })
@@ -978,6 +1065,8 @@ describe("SessionControl.reloadContext", () => {
       Effect.gen(function* () {
         const test = yield* TestInstance
         const { db } = yield* Database.Service
+        const control = yield* SessionControl.Service
+        const admission = yield* SessionAdmission.Service
         const directory = AbsolutePath.make(test.directory)
         yield* db
           .insert(ProjectTable)
@@ -1000,7 +1089,7 @@ describe("SessionControl.reloadContext", () => {
           .values({ session_id: timedOutReloadSessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
           .run()
 
-        const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: timedOutReloadSessionID })
+        const result = yield* control.reloadContext({ sessionID: timedOutReloadSessionID })
 
         expect(result).toEqual({ type: "failed_before_reset" })
         expect(
@@ -1010,7 +1099,7 @@ describe("SessionControl.reloadContext", () => {
             .where(eq(SessionContextEpochTable.session_id, timedOutReloadSessionID))
             .get(),
         ).toMatchObject({ baseline: "old" })
-        const claim = yield* (yield* SessionAdmission.Service).claim({
+        const claim = yield* admission.claim({
           sessionID: timedOutReloadSessionID,
           instanceID: directory,
         })
@@ -1023,6 +1112,8 @@ describe("SessionControl.reloadContext", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const control = yield* SessionControl.Service
+      const admission = yield* SessionAdmission.Service
       const directory = AbsolutePath.make(test.directory)
       const sessionID = SessionSchema.ID.make("ses_context_reload_reset_failure")
       yield* db
@@ -1053,7 +1144,7 @@ describe("SessionControl.reloadContext", () => {
         END
       `)
 
-      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID })
+      const result = yield* control.reloadContext({ sessionID })
 
       expect(result).toEqual({ type: "failed_before_reset" })
       expect(
@@ -1063,7 +1154,7 @@ describe("SessionControl.reloadContext", () => {
           .where(eq(SessionContextEpochTable.session_id, sessionID))
           .get(),
       ).toMatchObject({ baseline: "old" })
-      const claim = yield* (yield* SessionAdmission.Service).claim({ sessionID, instanceID: directory })
+      const claim = yield* admission.claim({ sessionID, instanceID: directory })
       yield* claim.release
     }),
   )
@@ -1072,6 +1163,8 @@ describe("SessionControl.reloadContext", () => {
     Effect.gen(function* () {
       const test = yield* TestInstance
       const { db } = yield* Database.Service
+      const control = yield* SessionControl.Service
+      const admission = yield* SessionAdmission.Service
       const directory = AbsolutePath.make(test.directory)
       const sessionID = SessionSchema.ID.make("ses_context_reload_fence")
       const entered = yield* Deferred.make<void>()
@@ -1107,17 +1200,15 @@ describe("SessionControl.reloadContext", () => {
         .insert(SessionContextEpochTable)
         .values({ session_id: sessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
         .run()
-      const reloading = yield* (yield* SessionControl.Service).reloadContext({ sessionID }).pipe(Effect.forkScoped)
+      const reloading = yield* control.reloadContext({ sessionID }).pipe(Effect.forkScoped)
       yield* Deferred.await(entered)
 
-      const blocked = yield* (yield* SessionAdmission.Service)
-        .claim({ sessionID, instanceID: directory })
-        .pipe(Effect.exit)
+      const blocked = yield* admission.claim({ sessionID, instanceID: directory }).pipe(Effect.exit)
 
       expect(blocked).toMatchObject({ _tag: "Failure" })
       yield* Deferred.succeed(release, undefined)
       expect(yield* Fiber.join(reloading)).toEqual({ type: "idle_complete" })
-      const claim = yield* (yield* SessionAdmission.Service).claim({ sessionID, instanceID: directory })
+      const claim = yield* admission.claim({ sessionID, instanceID: directory })
       yield* claim.release
     }),
   )

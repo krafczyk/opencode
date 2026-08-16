@@ -1,5 +1,6 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Exit, Fiber } from "effect"
+import { TestClock } from "effect/testing"
 import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { testEffect } from "./lib/effect"
@@ -86,6 +87,42 @@ describe("SessionAdmission", () => {
       yield* third.release
       yield* Fiber.join(control)
       expect(yield* Deferred.isDone(entered)).toBe(true)
+    }),
+  )
+
+  it.effect("bounds claim draining and releases the session fence", () =>
+    Effect.gen(function* () {
+      const admission = yield* SessionAdmission.Service
+      const claim = yield* admission.claim({ sessionID: session, instanceID: instance })
+      const control = yield* admission
+        .withSessionControl({ sessionID: session, instanceID: instance }, Effect.die("must not run"))
+        .pipe(Effect.exit, Effect.forkChild)
+
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("5 seconds")
+
+      const result = yield* Fiber.join(control)
+      expect(Exit.isFailure(result)).toBe(true)
+      expect(yield* admission.snapshot).toMatchObject({ sessionControls: [] })
+      yield* claim.release
+    }),
+  )
+
+  it.effect("bounds claim draining and releases the instance fence", () =>
+    Effect.gen(function* () {
+      const admission = yield* SessionAdmission.Service
+      const claim = yield* admission.claim({ sessionID: session, instanceID: instance })
+      const control = yield* admission
+        .withInstanceControl(instance, Effect.die("must not run"))
+        .pipe(Effect.exit, Effect.forkChild)
+
+      yield* Effect.yieldNow
+      yield* TestClock.adjust("5 seconds")
+
+      const result = yield* Fiber.join(control)
+      expect(Exit.isFailure(result)).toBe(true)
+      expect(yield* admission.snapshot).toMatchObject({ instanceControls: [] })
+      yield* claim.release
     }),
   )
 

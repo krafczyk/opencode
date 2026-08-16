@@ -620,10 +620,10 @@ const scenarios: Scenario[] = [
       check(body === true, "instance dispose should return true")
     }),
   http.protected
-    .post("/instance/reload", "instance.reload")
+    .post("/session/{sessionID}/instance/reload", "session.reload_project")
     .mutating()
     .seeded((ctx) => ctx.session({ title: "Guarded reload owner" }))
-    .at((ctx) => ({ path: "/instance/reload", headers: ctx.headers(), body: { sessionID: ctx.state.id } }))
+    .at((ctx) => ({ path: route("/session/{sessionID}/instance/reload", { sessionID: ctx.state.id }), headers: ctx.headers() }))
     .json(200, (body) => {
       object(body)
       check(body.type === "completed", "idle guarded reload should report completion")

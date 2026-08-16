@@ -3847,32 +3847,6 @@ export type ConfigV2ExperimentalPolicy = {
   resource: string
 }
 
-export type ProjectControlGuardedReloadPayload = {
-  sessionID: string
-}
-
-export type ProjectControlRefusal =
-  | "not_found"
-  | "stale_context"
-  | "blocked"
-  | "control_in_progress"
-  | "malformed_state"
-
-export type ProjectControlGuardedReloadOutcome =
-  | {
-      type: "refused"
-      reason: ProjectControlRefusal
-    }
-  | {
-      type: "completed"
-    }
-  | {
-      type: "recovery_failed"
-    }
-  | {
-      type: "uncertain"
-    }
-
 export type ProjectDirectories = Array<{
   directory: string
   strategy?: string
@@ -3883,15 +3857,35 @@ export type PtyTicketConnectToken = {
   expires_in: number
 }
 
+export type SessionInspectionSessionInfo = {
+  id: string
+  directory: string
+}
+
+export type SessionInspectionProjectInfo = {
+  id: string
+  primaryDirectory: string
+}
+
 export type SessionInspectionLocationClassification =
   | "primary_worktree"
   | "recognized_worktree"
   | "registered_directory"
   | "unregistered"
 
+export type SessionInspectionLocation = {
+  classification: SessionInspectionLocationClassification
+  root?: string
+}
+
 export type SessionInspectionDirectory = {
   directory: string
   classification: SessionInspectionLocationClassification
+}
+
+export type SessionInspectionCounts = {
+  userPrompts: number
+  completedAssistantResponses: number
 }
 
 export type SessionControlStateActivity = "idle" | "active" | "retrying"
@@ -3918,25 +3912,35 @@ export type SessionControlStateSnapshot = {
 }
 
 export type SessionInspectionSnapshot = {
-  session: {
-    id: string
-    directory: string
-  }
-  project: {
-    id: string
-    primaryDirectory: string
-  }
-  location: {
-    classification: SessionInspectionLocationClassification
-    root?: string
-  }
+  session: SessionInspectionSessionInfo
+  project: SessionInspectionProjectInfo
+  location: SessionInspectionLocation
   directories: Array<SessionInspectionDirectory>
-  counts: {
-    userPrompts: number
-    completedAssistantResponses: number
-  }
+  counts: SessionInspectionCounts
   control: SessionControlStateSnapshot
 }
+
+export type ProjectControlRefusal =
+  | "not_found"
+  | "stale_context"
+  | "blocked"
+  | "control_in_progress"
+  | "malformed_state"
+
+export type ProjectControlGuardedReloadOutcome =
+  | {
+      type: "refused"
+      reason: ProjectControlRefusal
+    }
+  | {
+      type: "completed"
+    }
+  | {
+      type: "recovery_failed"
+    }
+  | {
+      type: "uncertain"
+    }
 
 export type SessionControlChangeDirectoryPayload = {
   expectedSource: string
@@ -8239,34 +8243,6 @@ export type InstanceDisposeResponses = {
 
 export type InstanceDisposeResponse = InstanceDisposeResponses[keyof InstanceDisposeResponses]
 
-export type InstanceReloadData = {
-  body?: ProjectControlGuardedReloadPayload
-  path?: never
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/instance/reload"
-}
-
-export type InstanceReloadErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-}
-
-export type InstanceReloadError = InstanceReloadErrors[keyof InstanceReloadErrors]
-
-export type InstanceReloadResponses = {
-  /**
-   * Guarded instance reload outcome
-   */
-  200: ProjectControlGuardedReloadOutcome
-}
-
-export type InstanceReloadResponse = InstanceReloadResponses[keyof InstanceReloadResponses]
-
 export type PathGetData = {
   body?: never
   path?: never
@@ -9845,8 +9821,38 @@ export type SessionInspectionResponses = {
 
 export type SessionInspectionResponse = SessionInspectionResponses[keyof SessionInspectionResponses]
 
+export type SessionReloadProjectData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/instance/reload"
+}
+
+export type SessionReloadProjectErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionReloadProjectError = SessionReloadProjectErrors[keyof SessionReloadProjectErrors]
+
+export type SessionReloadProjectResponses = {
+  /**
+   * Guarded instance reload outcome
+   */
+  200: ProjectControlGuardedReloadOutcome
+}
+
+export type SessionReloadProjectResponse = SessionReloadProjectResponses[keyof SessionReloadProjectResponses]
+
 export type SessionChangeDirectoryData = {
-  body?: SessionControlChangeDirectoryPayload
+  body: SessionControlChangeDirectoryPayload
   path: {
     sessionID: string
   }

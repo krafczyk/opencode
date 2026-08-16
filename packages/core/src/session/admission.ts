@@ -1,6 +1,6 @@
 export * as SessionAdmission from "./admission"
 
-import { Context, Deferred, Effect, Layer, Schema } from "effect"
+import { Context, Deferred, Effect, Layer, Option, Schema } from "effect"
 import { makeGlobalNode } from "../effect/app-node"
 
 /** Identifies one durable session at the process-local admission boundary. */
@@ -118,7 +118,7 @@ const withClaim = <A, E, R>(target: SessionTarget, effect: Effect.Effect<A, E, R
   Effect.acquireUseRelease(
     claim(target),
     () => effect,
-    (ownership) => Effect.uninterruptible(ownership.release),
+    (ownership) => ownership.release,
   )
 
 const acquireSessionControl = Effect.fn("SessionAdmission.acquireSessionControl")(function* (target: SessionTarget) {
@@ -135,8 +135,17 @@ const acquireSessionControl = Effect.fn("SessionAdmission.acquireSessionControl"
 const withSessionControl = <A, E, R>(target: SessionTarget, effect: Effect.Effect<A, E, R>) =>
   Effect.acquireUseRelease(
     acquireSessionControl(target),
-    (ownership) => (ownership.drained ? Deferred.await(ownership.drained).pipe(Effect.andThen(effect)) : effect),
-    () => Effect.uninterruptible(Effect.sync(() => sessionControls.delete(target.sessionID))),
+    (ownership) =>
+      ownership.drained
+        ? Deferred.await(ownership.drained).pipe(
+            Effect.timeoutOption("5 seconds"),
+            Effect.flatMap(
+              (result): Effect.Effect<A, E | ControlInProgressError, R> =>
+                Option.isNone(result) ? Effect.fail(controlError("session", target)) : effect,
+            ),
+          )
+        : effect,
+    () => Effect.sync(() => sessionControls.delete(target.sessionID)),
   )
 
 const acquireInstanceControl = Effect.fn("SessionAdmission.acquireInstanceControl")(function* (instanceID: InstanceID) {
@@ -160,8 +169,15 @@ const acquireInstanceControl = Effect.fn("SessionAdmission.acquireInstanceContro
 const withInstanceControl = <A, E, R>(instanceID: InstanceID, effect: Effect.Effect<A, E, R>) =>
   Effect.acquireUseRelease(
     acquireInstanceControl(instanceID),
-    (drained) => Effect.forEach(drained, Deferred.await, { discard: true }).pipe(Effect.andThen(effect)),
-    () => Effect.uninterruptible(Effect.sync(() => instanceControls.delete(instanceID))),
+    (drained) =>
+      Effect.forEach(drained, Deferred.await, { discard: true }).pipe(
+        Effect.timeoutOption("5 seconds"),
+        Effect.flatMap(
+          (result): Effect.Effect<A, E | ControlInProgressError, R> =>
+            Option.isNone(result) ? Effect.fail(controlError("instance", { instanceID })) : effect,
+        ),
+      ),
+    () => Effect.sync(() => instanceControls.delete(instanceID)),
   )
 
 const snapshot = Effect.sync<Snapshot>(() => ({

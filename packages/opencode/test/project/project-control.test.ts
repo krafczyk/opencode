@@ -7,9 +7,11 @@ import { Project } from "@opencode-ai/core/project"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionMessage } from "@opencode-ai/core/session/message"
+import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionStore } from "@opencode-ai/core/session/store"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionInputTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { Deferred, Effect, Fiber, Layer } from "effect"
 import { BackgroundJob } from "../../src/background/job"
 import { Permission } from "../../src/permission"
@@ -125,9 +127,10 @@ describe("ProjectControl.reload", () => {
         slug: "stale",
       })
       const store = yield* InstanceStore.Service
+      const control = yield* ProjectControl.Service
       const first = yield* store.load({ directory })
 
-      expect(yield* (yield* ProjectControl.Service).reload({ sessionID, directory: other })).toEqual({
+      expect(yield* control.reload({ sessionID, directory: other })).toEqual({
         type: "refused",
         reason: "stale_context",
       })
@@ -139,6 +142,7 @@ describe("ProjectControl.reload", () => {
     Effect.gen(function* () {
       const directory = AbsolutePath.make(yield* tmpdirScoped({ git: true }))
       const sessionID = yield* seedSession({ id: "ses_project_reload_uncached", directory, slug: "uncached" })
+      const control = yield* ProjectControl.Service
       let bootstraps = 0
 
       yield* setBootstrap(
@@ -146,7 +150,7 @@ describe("ProjectControl.reload", () => {
           bootstraps++
         }),
       )
-      expect(yield* (yield* ProjectControl.Service).reload({ sessionID, directory })).toEqual({ type: "completed" })
+      expect(yield* control.reload({ sessionID, directory })).toEqual({ type: "completed" })
       expect(bootstraps).toBe(1)
     }),
   )
@@ -198,14 +202,43 @@ describe("ProjectControl.reload", () => {
     }),
   )
 
+  it.instance("refuses pending steer and queue inputs without reloading", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { db } = yield* Database.Service
+      const directory = AbsolutePath.make(test.directory)
+      const control = yield* ProjectControl.Service
+
+      for (const delivery of ["steer", "queue"] as const) {
+        const sessionID = yield* seedSession({
+          id: `ses_project_reload_pending_${delivery}`,
+          directory,
+          slug: `pending-${delivery}`,
+        })
+        yield* db
+          .insert(SessionInputTable)
+          .values({
+            id: SessionMessage.ID.make(`msg_project_reload_pending_${delivery}`),
+            session_id: sessionID,
+            prompt: Prompt.make({ text: delivery }),
+            delivery,
+            admitted_seq: 0,
+          })
+          .run()
+
+        expect(yield* control.reload({ sessionID, directory })).toEqual({ type: "refused", reason: "blocked" })
+      }
+    }),
+  )
+
   it.instance("drains an earlier claim into a blocker and rejects later work under the instance fence", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
       const directory = AbsolutePath.make(test.directory)
       const sessionID = yield* seedSession({ id: "ses_project_reload_handoff", directory, slug: "handoff" })
       const admission = yield* SessionAdmission.Service
-      const status = yield* SessionStatus.Service
       const control = yield* ProjectControl.Service
+      const status = yield* SessionStatus.Service
       const claim = yield* admission.claim({ sessionID, instanceID: directory })
       const reload = yield* control.reload({ sessionID, directory }).pipe(Effect.forkScoped)
 
@@ -234,6 +267,7 @@ describe("ProjectControl.reload", () => {
       const directory = AbsolutePath.make(test.directory)
       const sessionID = yield* seedSession({ id: "ses_project_reload_control", directory, slug: "control" })
       const admission = yield* SessionAdmission.Service
+      const control = yield* ProjectControl.Service
       const release = yield* Deferred.make<void>()
       const held = yield* admission
         .withSessionControl({ sessionID, instanceID: directory }, Deferred.await(release))
@@ -247,7 +281,7 @@ describe("ProjectControl.reload", () => {
         ),
         "session control was not acquired",
       )
-      expect(yield* (yield* ProjectControl.Service).reload({ sessionID, directory })).toEqual({
+      expect(yield* control.reload({ sessionID, directory })).toEqual({
         type: "refused",
         reason: "control_in_progress",
       })
@@ -262,9 +296,10 @@ describe("ProjectControl.reload", () => {
       const directory = AbsolutePath.make(test.directory)
       const sessionID = yield* seedSession({ id: "ses_project_reload_failure", directory, slug: "failure" })
       const admission = yield* SessionAdmission.Service
+      const control = yield* ProjectControl.Service
 
       yield* setBootstrap(Effect.die("replacement bootstrap failed"))
-      expect(yield* (yield* ProjectControl.Service).reload({ sessionID, directory })).toEqual({
+      expect(yield* control.reload({ sessionID, directory })).toEqual({
         type: "recovery_failed",
       })
       const claim = yield* admission.claim({ sessionID, instanceID: directory })

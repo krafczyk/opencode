@@ -11,6 +11,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionControl } from "@/session/control"
 import { SessionInspection } from "@/session/inspection"
+import { ProjectControl } from "@/project/control"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
@@ -95,6 +96,13 @@ export const ReloadContextOutcome = Schema.Union([
   Schema.Struct({ type: Schema.Literal("failed_before_reset") }),
   Schema.Struct({ type: Schema.Literal("recovery_uncertain") }),
 ]).annotate({ identifier: "SessionControl.ReloadContextOutcome" })
+/** A machine-readable guarded exact-instance reload outcome. */
+export const ReloadProjectOutcome = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("refused"), reason: ProjectControl.Refusal }),
+  Schema.Struct({ type: Schema.Literal("completed") }),
+  Schema.Struct({ type: Schema.Literal("recovery_failed") }),
+  Schema.Struct({ type: Schema.Literal("uncertain") }),
+]).annotate({ identifier: "ProjectControl.GuardedReloadOutcome" })
 
 export const SessionPaths = {
   list: root,
@@ -124,6 +132,7 @@ export const SessionPaths = {
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   updatePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   inspection: `${root}/:sessionID/inspection`,
+  reloadProject: `${root}/:sessionID/instance/reload`,
   changeDirectory: `${root}/:sessionID/directory`,
   reloadContext: `${root}/:sessionID/context/reload`,
 } as const
@@ -176,6 +185,19 @@ export const SessionApi = HttpApi.make("session")
             summary: "Inspect session",
             description:
               "Read one authoritative session and project snapshot without creating prompts, messages, model turns, or provider requests.",
+          }),
+        ),
+        HttpApiEndpoint.post("reloadProject", SessionPaths.reloadProject, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(ReloadProjectOutcome, "Guarded instance reload outcome"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.reload_project",
+            summary: "Reload selected session instance",
+            description:
+              "Reload only the exact instance derived from the selected session after server-side blocker validation. This operation creates no prompt, message, or model turn.",
           }),
         ),
         HttpApiEndpoint.post("changeDirectory", SessionPaths.changeDirectory, {
