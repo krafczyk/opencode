@@ -26,6 +26,65 @@ function setup() {
 }
 
 describe("ProjectDirectories", () => {
+  it.effect("classifies the most-specific containing root with stable category precedence", () =>
+    Effect.sync(() => {
+      const input = {
+        directory: AbsolutePath.make("/projects/main/vendor/docs"),
+        primary: AbsolutePath.make("/projects/main"),
+        recognized: [AbsolutePath.make("/projects/main-linked")],
+        registered: [AbsolutePath.make("/projects/main/vendor")],
+      }
+
+      expect(ProjectDirectories.classify(input)).toEqual({
+        type: "registered_directory",
+        root: AbsolutePath.make("/projects/main/vendor"),
+      })
+      expect(
+        ProjectDirectories.classify({
+          ...input,
+          directory: AbsolutePath.make("/projects/main/src"),
+        }),
+      ).toEqual({ type: "primary_worktree", root: AbsolutePath.make("/projects/main") })
+      expect(
+        ProjectDirectories.classify({
+          ...input,
+          directory: AbsolutePath.make("/projects/main-linked/packages"),
+        }),
+      ).toEqual({ type: "recognized_worktree", root: AbsolutePath.make("/projects/main-linked") })
+      expect(
+        ProjectDirectories.classify({
+          ...input,
+          directory: AbsolutePath.make("/projects/unknown"),
+        }),
+      ).toEqual({ type: "unregistered" })
+      expect(
+        ProjectDirectories.classify({
+          ...input,
+          directory: AbsolutePath.make("/project/nested"),
+          primary: AbsolutePath.make("/"),
+          recognized: [],
+          registered: [AbsolutePath.make("/")],
+        }),
+      ).toEqual({ type: "primary_worktree", root: AbsolutePath.make("/") })
+      expect(
+        ProjectDirectories.classify({
+          ...input,
+          directory: AbsolutePath.make("/projects/main-sibling/src"),
+        }),
+      ).toEqual({ type: "unregistered" })
+      if (process.platform === "win32") {
+        expect(
+          ProjectDirectories.classify({
+            directory: AbsolutePath.make("C:\\projects\\main-sibling\\src"),
+            primary: AbsolutePath.make("C:\\projects\\main"),
+            recognized: [],
+            registered: [],
+          }),
+        ).toEqual({ type: "unregistered" })
+      }
+    }),
+  )
+
   it.effect("decodes directory schemas", () =>
     Effect.sync(() => {
       expect(Schema.decodeUnknownSync(ProjectDirectories.ListInput)({ projectID })).toEqual({ projectID })
