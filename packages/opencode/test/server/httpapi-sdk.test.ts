@@ -378,6 +378,50 @@ describe("HttpApi SDK", () => {
       }),
   )
 
+  httpapiInstance(
+    "uses generated SDK session controls without model work",
+    { serverPath: "raw" },
+    ({ sdk, directory }) =>
+      Effect.gen(function* () {
+        const created = yield* capture(() => sdk.session.create({ title: "sdk controls" }))
+        const sessionID = String(record(created.data).id)
+        const inspection = yield* capture(() => sdk.session.inspection({ sessionID }))
+        const directoryChange = yield* capture(() =>
+          sdk.session.changeDirectory({
+            sessionID,
+            sessionControlChangeDirectoryPayload: { expectedSource: directory, destination: directory },
+          }),
+        )
+        const contextReload = yield* capture(() => sdk.session.reloadContext({ sessionID }))
+        let contextReloadRequests = 0
+        const noRetrySdk = yield* client("raw", directory, {
+          onRequest: (request) => {
+            if (new URL(request.url).pathname.endsWith("/context/reload")) contextReloadRequests++
+          },
+        })
+        const noRetryContextReload = yield* capture(() => noRetrySdk.session.reloadContext({ sessionID }))
+        const guardedReload = yield* capture(() =>
+          sdk.instance.reload({ projectControlGuardedReloadPayload: { sessionID } }),
+        )
+        const missing = yield* capture(() => sdk.session.inspection({ sessionID: "ses_missing" }))
+
+        expect(inspection.data).toMatchObject({
+          session: { id: sessionID, directory },
+          counts: { userPrompts: 0, completedAssistantResponses: 0 },
+        })
+        expect(directoryChange.data).toMatchObject({ type: "noop", session: { id: sessionID } })
+        expect(contextReload.data).toEqual({ type: "idle_complete" })
+        expect(noRetryContextReload.data).toEqual({ type: "idle_complete" })
+        expect(contextReloadRequests).toBe(1)
+        expect(guardedReload.data).toEqual({ type: "completed" })
+        expect(missing.error).toEqual({
+          _tag: "SessionNotFoundError",
+          sessionID: "ses_missing",
+          message: "Session not found: ses_missing",
+        })
+      }),
+  )
+
   httpapi(
     "routes configured SDK directory and workspace for v2 location GETs",
     withProject("raw", { setup: writeStandardFiles }, ({ directory }) =>

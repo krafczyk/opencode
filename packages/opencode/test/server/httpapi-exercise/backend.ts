@@ -17,7 +17,7 @@ export function call(scenario: ActiveScenario, ctx: SeededContext<unknown>, opti
   )
 }
 
-export function callAuthProbe(scenario: ActiveScenario, credentials: "missing" | "valid" = "missing") {
+export function callAuthProbe(scenario: ActiveScenario, credentials: "missing" | "invalid" | "valid" = "missing") {
   return Effect.promise(async () => {
     const controller = new AbortController()
     return Promise.race([
@@ -86,7 +86,11 @@ function toRequest(scenario: ActiveScenario, ctx: SeededContext<unknown>) {
   })
 }
 
-function toAuthProbeRequest(scenario: ActiveScenario, credentials: "missing" | "valid", signal: AbortSignal) {
+function toAuthProbeRequest(
+  scenario: ActiveScenario,
+  credentials: "missing" | "invalid" | "valid",
+  signal: AbortSignal,
+) {
   const spec = scenario.authProbe ?? {
     path: authProbePath(scenario.path),
     body: scenario.method === "GET" ? undefined : {},
@@ -94,7 +98,11 @@ function toAuthProbeRequest(scenario: ActiveScenario, credentials: "missing" | "
   const headers = {
     ...(spec.body === undefined ? {} : { "content-type": "application/json" }),
     ...spec.headers,
-    ...(credentials === "valid" ? { authorization: basic("opencode", "secret") } : {}),
+    ...(credentials === "valid"
+      ? { authorization: basic("opencode", "secret") }
+      : credentials === "invalid"
+        ? { authorization: basic("opencode", "invalid") }
+        : {}),
   }
   return new Request(new URL(spec.path, "http://localhost"), {
     method: scenario.method,

@@ -4,6 +4,7 @@ import { Format } from "@/format"
 import { LSP } from "@/lsp/lsp"
 import { Vcs } from "@/project/vcs"
 import { Skill } from "@/skill"
+import { ProjectControl } from "@/project/control"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
@@ -28,6 +29,17 @@ export const VcsDiffQuery = Schema.Struct({
   mode: Vcs.Mode,
   context: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
 })
+/** Identifies the session used to derive the exact instance for a guarded reload. */
+export const GuardedReloadPayload = Schema.Struct({
+  sessionID: ProjectControl.ReloadInput.fields.sessionID,
+}).annotate({ identifier: "ProjectControl.GuardedReloadPayload" })
+/** A machine-readable guarded exact-instance reload outcome. */
+export const GuardedReloadOutcome = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("refused"), reason: ProjectControl.Refusal }),
+  Schema.Struct({ type: Schema.Literal("completed") }),
+  Schema.Struct({ type: Schema.Literal("recovery_failed") }),
+  Schema.Struct({ type: Schema.Literal("uncertain") }),
+]).annotate({ identifier: "ProjectControl.GuardedReloadOutcome" })
 
 export class ApiVcsApplyError extends Schema.ErrorClass<ApiVcsApplyError>("VcsApplyError")(
   {
@@ -42,6 +54,7 @@ export class ApiVcsApplyError extends Schema.ErrorClass<ApiVcsApplyError>("VcsAp
 
 export const InstancePaths = {
   dispose: "/instance/dispose",
+  reload: "/instance/reload",
   path: "/path",
   vcs: "/vcs",
   vcsStatus: "/vcs/status",
@@ -67,6 +80,18 @@ export const InstanceApi = HttpApi.make("instance")
             identifier: "instance.dispose",
             summary: "Dispose instance",
             description: "Clean up and dispose the current OpenCode instance, releasing all resources.",
+          }),
+        ),
+        HttpApiEndpoint.post("reload", InstancePaths.reload, {
+          query: WorkspaceRoutingQuery,
+          payload: GuardedReloadPayload,
+          success: described(GuardedReloadOutcome, "Guarded instance reload outcome"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "instance.reload",
+            summary: "Reload selected session instance",
+            description:
+              "Reload only the exact instance derived from the selected session after server-side blocker validation. This operation creates no prompt, message, or model turn.",
           }),
         ),
         HttpApiEndpoint.get("path", InstancePaths.path, {

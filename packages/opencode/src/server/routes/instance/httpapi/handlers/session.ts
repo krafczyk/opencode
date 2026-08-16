@@ -13,6 +13,8 @@ import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionControl } from "@/session/control"
+import { SessionInspection } from "@/session/inspection"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -24,6 +26,7 @@ import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/htt
 import { InstanceHttpApi } from "../api"
 import {
   CommandPayload,
+  ChangeDirectoryPayload,
   DiffQuery,
   ForkPayload,
   InitPayload,
@@ -36,7 +39,7 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { PermissionNotFoundError, SessionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const tryParseJson = (text: string) =>
@@ -58,6 +61,8 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
+    const control = yield* SessionControl.Service
+    const inspection = yield* SessionInspection.Service
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
 
@@ -84,6 +89,32 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
 
     const get = Effect.fn("SessionHttpApi.get")(function* (ctx: { params: { sessionID: SessionID } }) {
       return yield* requireSession(ctx.params.sessionID)
+    })
+
+    const inspect = Effect.fn("SessionHttpApi.inspection")(function* (ctx: { params: { sessionID: SessionID } }) {
+      return yield* inspection.inspect(ctx.params.sessionID).pipe(
+        Effect.catchTag("SessionInspection.NotFoundError", (error) =>
+          Effect.fail(
+            new SessionNotFoundError({
+              sessionID: String(error.sessionID),
+              message: `Session not found: ${error.sessionID}`,
+            }),
+          ),
+        ),
+      )
+    })
+
+    const changeDirectory = Effect.fn("SessionHttpApi.changeDirectory")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof ChangeDirectoryPayload.Type
+    }) {
+      return yield* control.changeDirectory({ sessionID: ctx.params.sessionID, ...ctx.payload })
+    })
+
+    const reloadContext = Effect.fn("SessionHttpApi.reloadContext")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      return yield* control.reloadContext({ sessionID: ctx.params.sessionID })
     })
 
     const children = Effect.fn("SessionHttpApi.children")(function* (ctx: { params: { sessionID: SessionID } }) {
@@ -416,6 +447,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("list", list)
       .handle("status", status)
       .handle("get", get)
+      .handle("inspection", inspect)
+      .handle("changeDirectory", changeDirectory)
+      .handle("reloadContext", reloadContext)
       .handle("children", children)
       .handle("todo", todo)
       .handle("diff", diff)

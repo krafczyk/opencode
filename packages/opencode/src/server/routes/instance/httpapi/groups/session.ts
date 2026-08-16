@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { Permission } from "@/permission"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 
@@ -8,6 +9,8 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionControl } from "@/session/control"
+import { SessionInspection } from "@/session/inspection"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
@@ -20,7 +23,7 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
-import { ApiNotFoundError, PermissionNotFoundError, SessionBusyError } from "../errors"
+import { ApiNotFoundError, PermissionNotFoundError, SessionBusyError, SessionNotFoundError } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -74,6 +77,24 @@ export const RevertPayload = Schema.Struct(Struct.omit(SessionRevert.RevertInput
 export const PermissionResponsePayload = Schema.Struct({
   response: PermissionV1.Reply,
 })
+/** The request body for changing one selected session's durable directory. */
+export const ChangeDirectoryPayload = Schema.Struct(
+  Struct.omit(SessionControl.ChangeDirectoryInput.fields, ["sessionID"]),
+).annotate({ identifier: "SessionControl.ChangeDirectoryPayload" })
+/** A machine-readable selected-session directory change outcome. */
+export const ChangeDirectoryOutcome = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("noop"), session: SessionSchema.Info }),
+  Schema.Struct({ type: Schema.Literal("refused"), reason: SessionControl.Refusal }),
+  Schema.Struct({ type: Schema.Literal("completed"), session: SessionSchema.Info }),
+  Schema.Struct({ type: Schema.Literal("precommit_failed") }),
+]).annotate({ identifier: "SessionControl.ChangeDirectoryOutcome" })
+/** A machine-readable selected-session context reload outcome. */
+export const ReloadContextOutcome = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("idle_complete") }),
+  Schema.Struct({ type: Schema.Literal("interrupted_complete") }),
+  Schema.Struct({ type: Schema.Literal("failed_before_reset") }),
+  Schema.Struct({ type: Schema.Literal("recovery_uncertain") }),
+]).annotate({ identifier: "SessionControl.ReloadContextOutcome" })
 
 export const SessionPaths = {
   list: root,
@@ -102,6 +123,9 @@ export const SessionPaths = {
   deleteMessage: `${root}/:sessionID/message/:messageID`,
   deletePart: `${root}/:sessionID/message/:messageID/part/:partID`,
   updatePart: `${root}/:sessionID/message/:messageID/part/:partID`,
+  inspection: `${root}/:sessionID/inspection`,
+  changeDirectory: `${root}/:sessionID/directory`,
+  reloadContext: `${root}/:sessionID/context/reload`,
 } as const
 
 export const SessionApi = HttpApi.make("session")
@@ -139,6 +163,46 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.get",
             summary: "Get session",
             description: "Retrieve detailed information about a specific OpenCode session.",
+          }),
+        ),
+        HttpApiEndpoint.get("inspection", SessionPaths.inspection, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(SessionInspection.Snapshot, "Authoritative session inspection"),
+          error: [HttpApiError.BadRequest, SessionNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.inspection",
+            summary: "Inspect session",
+            description:
+              "Read one authoritative session and project snapshot without creating prompts, messages, model turns, or provider requests.",
+          }),
+        ),
+        HttpApiEndpoint.post("changeDirectory", SessionPaths.changeDirectory, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: ChangeDirectoryPayload,
+          success: described(ChangeDirectoryOutcome, "Directory change outcome"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.change_directory",
+            summary: "Change session directory",
+            description:
+              "Change only the selected session's durable directory after server validation. This operation never changes either working tree.",
+          }),
+        ),
+        HttpApiEndpoint.post("reloadContext", SessionPaths.reloadContext, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(ReloadContextOutcome, "Session context reload outcome"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.reload_context",
+            summary: "Reload session context",
+            description:
+              "Fence and reset the selected session's location-derived context without changing its directory or reloading its project instance.",
           }),
         ),
         HttpApiEndpoint.get("children", SessionPaths.children, {
