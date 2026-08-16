@@ -12,8 +12,10 @@ import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
+import { ProjectDirectories } from "../project/directories"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
+import path from "path"
 
 type DatabaseService = Database.Interface["db"]
 
@@ -211,6 +213,7 @@ const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const events = yield* EventV2.Service
     const { db } = yield* Database.Service
+    const directories = yield* ProjectDirectories.Service
     yield* events.project(SessionV1.Event.Created, (event) =>
       Effect.gen(function* () {
         const stored = yield* db
@@ -241,10 +244,22 @@ const layer = Layer.effectDiscard(
     )
     yield* events.project(SessionEvent.Moved, (event) =>
       Effect.gen(function* () {
+        const existing = yield* db
+          .select({ projectID: SessionTable.project_id })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        const directory = event.data.registerRoot
+          ? path.join(event.data.location.directory, event.data.subdirectory ?? "")
+          : event.data.location.directory
+        if (existing && event.data.registerRoot) {
+          yield* directories.create({ projectID: existing.projectID, directory: event.data.location.directory })
+        }
         yield* db
           .update(SessionTable)
           .set({
-            directory: event.data.location.directory,
+            directory,
             path: event.data.subdirectory,
             workspace_id: event.data.location.workspaceID ? WorkspaceV2.ID.make(event.data.location.workspaceID) : null,
             time_updated: DateTime.toEpochMillis(event.data.timestamp),
@@ -452,4 +467,8 @@ const layer = Layer.effectDiscard(
   }),
 )
 
-export const node = makeGlobalNode({ name: "session-projector", layer, deps: [EventV2.node, Database.node] })
+export const node = makeGlobalNode({
+  name: "session-projector",
+  layer,
+  deps: [EventV2.node, Database.node, ProjectDirectories.node],
+})

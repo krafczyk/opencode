@@ -83,22 +83,25 @@ const layer = Layer.effect(
       return yield* admission.withSessionControl(
         { sessionID: input.sessionID, instanceID: current.location.directory },
         Effect.gen(function* () {
+          // A competing directory control may have completed while this move waited for the same lease.
+          const active = yield* sessions.get(input.sessionID)
+          if (!active) return yield* new SessionV2.NotFoundError({ sessionID: input.sessionID })
           const directory = AbsolutePath.make(input.destination.directory)
-          if (current.location.directory === directory) return
+          if (active.location.directory === directory) return
 
-          const source = yield* project.resolve(current.location.directory)
+          const source = yield* project.resolve(active.location.directory)
           const destination = yield* project.resolve(directory)
-          if (current.projectID !== destination.id) {
-            return yield* new DestinationProjectMismatchError({ expected: current.projectID, actual: destination.id })
+          if (active.projectID !== destination.id) {
+            return yield* new DestinationProjectMismatchError({ expected: active.projectID, actual: destination.id })
           }
 
           const moveChanges = input.moveChanges && source.directory !== destination.directory
-          const sourceRepository = moveChanges ? yield* git.repo.discover(current.location.directory) : undefined
+          const sourceRepository = moveChanges ? yield* git.repo.discover(active.location.directory) : undefined
           if (moveChanges && !sourceRepository)
             return yield* new CaptureChangesError({ message: "Source is not a Git repository" })
           const patch = sourceRepository
             ? yield* git.change
-                .capture({ repository: sourceRepository, path: current.location.directory })
+                .capture({ repository: sourceRepository, path: active.location.directory })
                 .pipe(Effect.mapError((error) => new CaptureChangesError({ message: error.message })))
             : Git.ChangeSet.make("")
           if (patch) {
@@ -117,16 +120,16 @@ const layer = Layer.effect(
           })
 
           if (patch) {
-            const repository = yield* git.repo.discover(current.location.directory)
+            const repository = yield* git.repo.discover(active.location.directory)
             if (!repository)
               return yield* new ResetSourceChangesError({
-                directory: current.location.directory,
+                directory: active.location.directory,
                 message: "Source is not a Git repository",
               })
             yield* git.change
               .discard({
                 repository,
-                path: current.location.directory,
+                path: active.location.directory,
                 index: "preserve",
                 untracked: "remove",
               })

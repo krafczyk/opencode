@@ -20,6 +20,7 @@ const projects = Layer.succeed(
   ProjectV2.Service.of({
     resolve: (directory) => Effect.succeed({ id: ProjectV2.ID.global, directory }),
     directories: () => Effect.succeed([]),
+    origin: () => Effect.succeed(undefined),
     commit: () => Effect.void,
   }),
 )
