@@ -164,6 +164,67 @@ export function resumeStreamAfterPageShow(event: PageTransitionEvent, start: () 
   start()
 }
 
+type StreamFetch = (input: URL | RequestInfo, init?: RequestInit) => Promise<Response>
+
+/** Wraps event-stream responses so every delivered byte, including heartbeat comments, reports liveness. */
+export function createActivityTrackingFetch(base: StreamFetch, onActivity: () => void): StreamFetch {
+  return async (input, init) => {
+    const response = await base(input, init)
+    if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream")) return response
+    const reader = response.body.getReader()
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const next = await reader.read()
+        if (next.done) {
+          controller.close()
+          return
+        }
+        onActivity()
+        controller.enqueue(next.value)
+      },
+      cancel(reason) {
+        return reader.cancel(reason)
+      },
+    })
+    return new Response(body, {
+      headers: response.headers,
+      status: response.status,
+      statusText: response.statusText,
+    })
+  }
+}
+
+/** Creates a resettable one-shot timeout for an event-stream attempt. */
+export function createEventStreamWatchdog(options: {
+  timeout: number
+  onStale: () => void
+  setTimer?: (callback: () => void, timeout: number) => ReturnType<typeof setTimeout>
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
+}) {
+  const setTimer = options.setTimer ?? setTimeout
+  const clearTimer = options.clearTimer ?? clearTimeout
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let generation = 0
+
+  const stop = () => {
+    generation++
+    if (!timer) return
+    clearTimer(timer)
+    timer = undefined
+  }
+  const reset = () => {
+    generation++
+    const active = generation
+    if (timer) clearTimer(timer)
+    timer = setTimer(() => {
+      if (active !== generation) return
+      timer = undefined
+      options.onStale()
+    }, options.timeout)
+  }
+  return { reset, stop }
+}
+
 type ServerEventEmitter = ReturnType<typeof createGlobalEmitter<{ [key: string]: ServerEvent }>>
 type ServerSDKBase = {
   server: ServerConnection.Any
@@ -178,6 +239,7 @@ type ServerSDKBase = {
     on: ServerEventEmitter["on"]
     listen: ServerEventEmitter["listen"]
     start: () => Promise<void> | undefined
+    onReconnect: (handler: () => void) => () => void
   }
   createClient: (
     opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">,
@@ -199,10 +261,14 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     }
   })()
 
-  const eventApi = createApiForServer({ server: server.http, fetch: eventFetch })
+  let streamActivity = () => {}
+  const streamFetch = createActivityTrackingFetch(eventFetch ?? globalThis.fetch.bind(globalThis), () =>
+    streamActivity(),
+  ) as typeof fetch
+  const eventApi = createApiForServer({ server: server.http, fetch: streamFetch })
   const eventSdk = createSdkForServer({
     signal: abort.signal,
-    fetch: eventFetch,
+    fetch: streamFetch,
     server: server.http,
   })
   const protocol = detectServerProtocol(server.http, platform.fetch ?? globalThis.fetch)
@@ -218,6 +284,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   const FLUSH_FRAME_MS = 16
   const STREAM_YIELD_MS = 8
   const RECONNECT_DELAY_MS = 250
+  const STREAM_STALL_MS = 45_000
 
   let queue: Queued[] = []
   let buffer: Queued[] = []
@@ -256,6 +323,18 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   let run: Promise<void> | undefined
   let started = false
   let generation = 0
+  let attempts = 0
+  const reconnectHandlers = new Set<() => void>()
+
+  const notifyReconnect = () => {
+    for (const handler of reconnectHandlers) {
+      try {
+        handler()
+      } catch (error) {
+        console.error("[global-sdk] reconnect handler failed", error)
+      }
+    }
+  }
 
   const start = () => {
     if (started) return run
@@ -267,10 +346,27 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
       // oxlint-disable-next-line no-unmodified-loop-condition -- `started` is set to false by stop() which also aborts; both flags are checked to allow graceful exit
       while (!abort.signal.aborted && started && generation === active) {
         attempt = new AbortController()
+        const controller = attempt
+        const watchdog = createEventStreamWatchdog({
+          timeout: STREAM_STALL_MS,
+          onStale: () => {
+            console.warn("[global-sdk] event stream stalled, reconnecting", { url: server.http.url })
+            controller.abort()
+          },
+        })
+        attempts++
+        let connected = attempts === 1
+        streamActivity = () => {
+          watchdog.reset()
+          if (connected) return
+          connected = true
+          notifyReconnect()
+        }
         const onAbort = () => {
-          attempt?.abort()
+          controller.abort()
         }
         abort.signal.addEventListener("abort", onAbort)
+        watchdog.reset()
         try {
           const kind = await protocol
           const events =
@@ -300,6 +396,8 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
             })
           }
         } finally {
+          watchdog.stop()
+          streamActivity = () => {}
           abort.signal.removeEventListener("abort", onAbort)
           attempt = undefined
         }
@@ -361,6 +459,10 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
       on: emitter.on.bind(emitter),
       listen: emitter.listen.bind(emitter),
       start,
+      onReconnect(handler: () => void) {
+        reconnectHandlers.add(handler)
+        return () => reconnectHandlers.delete(handler)
+      },
     },
     createClient(opts: Omit<Parameters<typeof createSdkForServer>[0], "server" | "fetch">) {
       return createSdkForServer({

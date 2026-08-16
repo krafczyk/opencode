@@ -168,6 +168,62 @@ describe("current session timeline rows", () => {
     ])
   })
 
+  test("updates thinking to the newest reasoning heading", () => {
+    const source = [
+      { id: "msg_user", type: "user", text: "investigate", time: { created: 1 } },
+      {
+        id: "msg_assistant",
+        type: "assistant",
+        agent: "build",
+        model: { id: "model", providerID: "provider" },
+        content: [{ type: "reasoning", text: "## Inspecting events\nDetails\n\n## Verifying recovery\nMore details" }],
+        time: { created: 2 },
+      },
+    ] satisfies SessionMessageInfo[]
+    const normalized = normalizeSessionMessages("ses_1", source)
+    const messages = new Map(normalized.messages.map((message) => [message.id, message]))
+
+    const result = Timeline.constructSessionMessageRows(
+      source,
+      (messageID) => messages.get(messageID),
+      (messageID) => normalized.parts.get(messageID) ?? [],
+      false,
+      "busy",
+      true,
+      normalized.messages.filter((message) => message.role === "user"),
+    )
+
+    expect(result.rows.find((row) => row._tag === "Thinking")?.reasoningHeading).toBe("Verifying recovery")
+  })
+
+  test("preserves angle-bracket text in markdown reasoning headings", () => {
+    const source = [
+      { id: "msg_user", type: "user", text: "investigate", time: { created: 1 } },
+      {
+        id: "msg_assistant",
+        type: "assistant",
+        agent: "build",
+        model: { id: "model", providerID: "provider" },
+        content: [{ type: "reasoning", text: "<h2>Inspecting <em>events</em></h2>\n\n## Compare <old> with <new>" }],
+        time: { created: 2 },
+      },
+    ] satisfies SessionMessageInfo[]
+    const normalized = normalizeSessionMessages("ses_1", source)
+    const messages = new Map(normalized.messages.map((message) => [message.id, message]))
+
+    const result = Timeline.constructSessionMessageRows(
+      source,
+      (messageID) => messages.get(messageID),
+      (messageID) => normalized.parts.get(messageID) ?? [],
+      false,
+      "busy",
+      true,
+      normalized.messages.filter((message) => message.role === "user"),
+    )
+
+    expect(result.rows.find((row) => row._tag === "Thinking")?.reasoningHeading).toBe("Compare <old> with <new>")
+  })
+
   test("removes a failed assistant error when the turn continues streaming", () => {
     const source = [
       { id: "msg_user", type: "user", text: "recover", time: { created: 1 } },

@@ -2,8 +2,10 @@ import type {
   Config,
   OpencodeClient,
   Path,
+  PermissionRequest,
   Project,
   ProviderAuthResponse,
+  QuestionRequest,
   SessionStatus,
 } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@/utils/toast"
@@ -35,7 +37,7 @@ import { formatServerError } from "@/utils/server-errors"
 import { queryOptions, useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/solid-query"
 import type { SolidQueryOptions } from "@tanstack/solid-query"
 import { createRefreshQueue } from "./global-sync/queue"
-import { directoryKey } from "./global-sync/utils"
+import { cmp, directoryKey, normalizePermissionRequest } from "./global-sync/utils"
 import { PathKey } from "@/utils/path-key"
 import { createDirSyncContext } from "./directory-sync"
 import { createSimpleContext } from "@opencode-ai/ui/context"
@@ -89,6 +91,8 @@ type ApiQueryOptions<T, K extends readonly unknown[]> = SolidQueryOptions<T, Err
 type SessionActiveApi = {
   readonly active: () => Promise<SessionActiveOutput>
 }
+
+const activeSessionsQueryKey = (scope: ServerScope) => [scope, "activeSessions"] as const
 
 export const loadMcpQuery = (
   scope: ServerScope,
@@ -155,7 +159,7 @@ export const loadActiveSessionsQuery = (
   api: SessionActiveApi,
 ): ApiQueryOptions<SessionActiveOutput, readonly [ServerScope, "activeSessions"]> =>
   queryOptions<SessionActiveOutput, Error, SessionActiveOutput, readonly [ServerScope, "activeSessions"]>({
-    queryKey: [scope, "activeSessions"] as const,
+    queryKey: activeSessionsQueryKey(scope),
     queryFn: () => api.active(),
     enabled: true,
     staleTime: Number.POSITIVE_INFINITY,
@@ -174,6 +178,77 @@ export function seedActiveSessionStatuses(
     const status = active[sessionID]
     session.set("session_status", sessionID, status?.type === "running" ? { type: "busy" } : status)
   }
+}
+
+/** Clears cached non-idle statuses that the authoritative active-session snapshot no longer contains. */
+export function reconcileActiveSessionStatuses(
+  session: Pick<ServerSession, "data" | "set">,
+  active: SessionActiveOutput | Record<string, SessionStatus>,
+) {
+  for (const [sessionID, status] of Object.entries(session.data.session_status)) {
+    if (!status || status.type === "idle") continue
+    if (active[sessionID] !== undefined) continue
+    session.set("session_status", sessionID, { type: "idle" })
+  }
+}
+
+/** Reloads pending questions and permissions for selected sessions, grouping server reads by directory. */
+export async function resyncSessionRequests(input: {
+  sessionIDs: string[]
+  session: Pick<ServerSession, "get" | "set">
+  load: (directory: string) => Promise<{ permissions: PermissionRequest[]; questions: QuestionRequest[] }>
+}) {
+  const directories = Map.groupBy(
+    [...new Set(input.sessionIDs)].flatMap((sessionID) => {
+      const directory = input.session.get(sessionID)?.directory
+      return directory ? [{ directory, sessionID }] : []
+    }),
+    (item) => item.directory,
+  )
+  await Promise.all(
+    [...directories].map(async ([directory, sessions]) => {
+      const result = await input.load(directory)
+      const permissions = Map.groupBy(result.permissions, (item) => item.sessionID)
+      const questions = Map.groupBy(result.questions, (item) => item.sessionID)
+      batch(() => {
+        for (const item of sessions) {
+          input.session.set(
+            "permission",
+            item.sessionID,
+            reconcile(
+              (permissions.get(item.sessionID) ?? []).sort((a, b) => cmp(a.id, b.id)),
+              { key: "id" },
+            ),
+          )
+          input.session.set(
+            "question",
+            item.sessionID,
+            reconcile(
+              (questions.get(item.sessionID) ?? []).sort((a, b) => cmp(a.id, b.id)),
+              { key: "id" },
+            ),
+          )
+        }
+      })
+    }),
+  )
+}
+
+/** Force-refreshes every selected session cache and waits until all authoritative reads settle. */
+export async function resyncSessionState(input: {
+  sessionIDs: string[]
+  session: Pick<ServerSession, "sync" | "todo">
+  requests: (sessionIDs: string[]) => Promise<void>
+  refreshStatus?: boolean
+}) {
+  const sessionIDs = [...new Set(input.sessionIDs)]
+  await Promise.all([
+    ...sessionIDs.map((sessionID) =>
+      input.session.sync(sessionID, { force: true, refreshStatus: input.refreshStatus }),
+    ),
+    ...sessionIDs.map((sessionID) => input.session.todo(sessionID, { force: true })),
+    input.requests(sessionIDs),
+  ])
 }
 
 function makeQueryOptionsApi(
@@ -227,6 +302,28 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   const session = createServerSession(serverSDK.client, serverSDK.api.session, serverSDK.api.message, {
     protocol: serverSDK.protocol,
   })
+  const loadSessionRequests = async (directory: string) => {
+    const sdk = sdkFor(directory)
+    if ((await serverSDK.protocol) === "v1") {
+      const [permissions, questions] = await Promise.all([sdk.permission.list(), sdk.question.list()])
+      return { permissions: permissions.data ?? [], questions: questions.data ?? [] }
+    }
+    const [permissions, questions] = await Promise.all([
+      serverSDK.api.permission.request.list({ location: { directory } }),
+      serverSDK.api.question.request.list({ location: { directory } }),
+    ])
+    return {
+      permissions: permissions.data.map(normalizePermissionRequest),
+      questions: questions.data,
+    }
+  }
+  const resyncSessions = (sessionIDs: string[], refreshStatus = true) =>
+    resyncSessionState({
+      sessionIDs,
+      session,
+      requests: (ids) => resyncSessionRequests({ sessionIDs: ids, session, load: loadSessionRequests }),
+      refreshStatus,
+    })
   const queryOptionsApi = makeQueryOptionsApi(
     serverSDK.scope,
     () => serverSDK.client,
@@ -234,6 +331,21 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     sdkFor,
     serverSDK.protocol,
   )
+  const readActiveSessions = async () => {
+    if ((await serverSDK.protocol) !== "v1") {
+      const active = await serverSDK.api.session.active()
+      return { active, statuses: active }
+    }
+    const statuses = (await serverSDK.client.session.status()).data ?? {}
+    return {
+      statuses,
+      active: Object.fromEntries(
+        Object.entries(statuses).flatMap(([sessionID, status]) =>
+          status.type === "idle" ? [] : [[sessionID, { type: "running" as const }]],
+        ),
+      ),
+    }
+  }
 
   const [configQuery, providerQuery, pathQuery] = useQueries(() => ({
     queries: [queryOptionsApi.globalConfig(), queryOptionsApi.providers(null), queryOptionsApi.path(null)],
@@ -241,24 +353,12 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
   const activeSessionsQuery = useQuery(() =>
     loadActiveSessionsQuery(serverSDK.scope, {
       active: async () => {
-        if ((await serverSDK.protocol) === "v1") {
-          const statuses = (await serverSDK.client.session.status()).data ?? {}
-          seedActiveSessionStatuses(session, statuses)
-          for (const sessionID of Object.keys(statuses)) {
-            void session.resolve(sessionID).catch(() => undefined)
-          }
-          return Object.fromEntries(
-            Object.entries(statuses).flatMap(([sessionID, status]) =>
-              status.type === "idle" ? [] : [[sessionID, { type: "running" as const }]],
-            ),
-          )
-        }
-        const active = await serverSDK.api.session.active()
-        seedActiveSessionStatuses(session, active)
-        for (const sessionID of Object.keys(active)) {
+        const result = await readActiveSessions()
+        seedActiveSessionStatuses(session, result.statuses)
+        for (const sessionID of Object.keys(result.statuses)) {
           void session.resolve(sessionID).catch(() => undefined)
         }
-        return active
+        return result.active
       },
     }),
   )
@@ -294,6 +394,42 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     queryClient.refetchQueries({
       predicate: (query) => query.queryKey[0] === serverSDK.scope && query.queryKey[2] === "providers",
     })
+
+  let reconnectRepair: Promise<void> | undefined
+  const repairAfterReconnect = () => {
+    if (reconnectRepair) return reconnectRepair
+    const request = (async () => {
+      const result = await readActiveSessions()
+      seedActiveSessionStatuses(session, result.statuses)
+      reconcileActiveSessionStatuses(session, result.active)
+      const sessionIDs = [
+        ...new Set([
+          ...Object.keys(session.data.message),
+          ...Object.keys(session.data.todo),
+          ...Object.keys(session.data.permission),
+          ...Object.keys(session.data.question),
+          ...Object.entries(session.data.session_status).flatMap(([sessionID, status]) =>
+            status.type === "idle" ? [] : [sessionID],
+          ),
+        ]),
+      ]
+      await resyncSessions(sessionIDs, false)
+      queryClient.setQueryData(activeSessionsQueryKey(serverSDK.scope), result.active)
+      console.warn("[server-sync] repaired state after event stream reconnect", {
+        active: Object.keys(result.active),
+        resynced: sessionIDs,
+      })
+    })()
+      .catch((error) => {
+        console.warn("[server-sync] reconnect repair failed", error)
+      })
+      .finally(() => {
+        if (reconnectRepair === request) reconnectRepair = undefined
+      })
+    reconnectRepair = request
+    return request
+  }
+  onCleanup(serverSDK.event.onReconnect(() => void repairAfterReconnect()))
 
   let bootedAt = 0
   let bootingRoot = false
@@ -688,6 +824,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     updateConfig: updateConfigMutation.mutateAsync,
     project: projectApi,
     session,
+    resyncSession: (sessionID: string) => resyncSessions([sessionID]),
     homeSessions,
     mcp: {
       toggle: async (directory: string, name: string) => {

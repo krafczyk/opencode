@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { adaptServerEvent, coalesceServerEvents, enqueueServerEvent, resumeStreamAfterPageShow } from "./server-sdk"
+import {
+  adaptServerEvent,
+  coalesceServerEvents,
+  createActivityTrackingFetch,
+  createEventStreamWatchdog,
+  enqueueServerEvent,
+  resumeStreamAfterPageShow,
+} from "./server-sdk"
 import type { OpenCodeEvent } from "@opencode-ai/client/promise"
 import type { Event } from "@opencode-ai/sdk/v2/client"
 
@@ -12,6 +19,77 @@ describe("resumeStreamAfterPageShow", () => {
     resumeStreamAfterPageShow({ persisted: true } as PageTransitionEvent, start)
 
     expect(starts).toBe(1)
+  })
+})
+
+describe("event stream liveness", () => {
+  const stream = (chunks: string[], contentType = "text/event-stream") =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk))
+          controller.close()
+        },
+      }),
+      { headers: { "content-type": contentType } },
+    )
+
+  test("tracks heartbeat bytes discarded by the SSE parser", async () => {
+    let activity = 0
+    const fetch = createActivityTrackingFetch(
+      async () => stream([": heartbeat\n\n", ": heartbeat\n\n"]),
+      () => activity++,
+    )
+
+    const response = await fetch("http://localhost/api/event")
+
+    expect(await response.text()).toBe(": heartbeat\n\n: heartbeat\n\n")
+    expect(activity).toBe(2)
+  })
+
+  test("passes non-stream responses through unchanged", async () => {
+    let activity = 0
+    const original = stream(["{}"], "application/json")
+    const fetch = createActivityTrackingFetch(
+      async () => original,
+      () => activity++,
+    )
+
+    expect(await fetch("http://localhost/api/health")).toBe(original)
+    expect(activity).toBe(0)
+  })
+
+  test("restarts its timeout on activity and cannot fire after stop", () => {
+    const timers = new Map<number, () => void>()
+    const cleared: number[] = []
+    let next = 0
+    let stale = 0
+    const watchdog = createEventStreamWatchdog({
+      timeout: 45_000,
+      onStale: () => stale++,
+      setTimer: (callback, timeout) => {
+        expect(timeout).toBe(45_000)
+        next++
+        timers.set(next, callback)
+        return next as unknown as ReturnType<typeof setTimeout>
+      },
+      clearTimer: (timer) => cleared.push(timer as unknown as number),
+    })
+
+    watchdog.reset()
+    const first = next
+    watchdog.reset()
+    const second = next
+    timers.get(first)?.()
+    timers.get(second)?.()
+    expect(stale).toBe(1)
+
+    watchdog.reset()
+    const third = next
+    watchdog.stop()
+    timers.get(third)?.()
+    expect(stale).toBe(1)
+    expect(cleared).toEqual([first, third])
   })
 })
 

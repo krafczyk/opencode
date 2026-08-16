@@ -877,7 +877,7 @@ export function createServerSession(
     }
   }
 
-  const sync = (sessionID: string, options?: { force?: boolean; messageLimit?: number }) => {
+  const sync = (sessionID: string, options?: { force?: boolean; messageLimit?: number; refreshStatus?: boolean }) => {
     touch(sessionID)
     if (options?.force) {
       const pending = forcedSync.get(sessionID)
@@ -891,7 +891,7 @@ export function createServerSession(
           await Promise.all([
             resolve(sessionID, { force: true }),
             loadMessages(sessionID, options.messageLimit ?? meta.limit[sessionID] ?? initialMessagePageSize),
-            refreshStatus(sessionID),
+            options.refreshStatus === false ? undefined : refreshStatus(sessionID),
           ])
         })
       })()
@@ -1446,10 +1446,6 @@ export function createServerSession(
     async todo(sessionID: string, request?: { force?: boolean }) {
       touch(sessionID)
       if (data.todo[sessionID] !== undefined && !request?.force) return
-      if ((await options?.protocol) === "v2") {
-        setData("todo", sessionID, [])
-        return
-      }
       return runInflight(inflightTodo, sessionID, () => {
         const active = generation(sessionID)
         return (options?.retry ?? retry)(() => client.session.todo({ sessionID })).then((result) => {
