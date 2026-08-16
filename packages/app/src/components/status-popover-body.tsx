@@ -249,6 +249,12 @@ function ServerStatusList(props: { state: ServerStatusState }) {
   )
 }
 
+/**
+ * Renders server status and controls, including authoritative session re-sync.
+ *
+ * @param props `shown` reports whether the popover is currently visible.
+ * @returns Popover content whose actions update shared server and session state.
+ */
 export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
   const sync = useSync()
   const global = useGlobal()
@@ -267,8 +273,10 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
     if (!sessionID) return
     const target = sync()
     const scope = serverSDK().scope
-    void target.session
-      .sync(sessionID, { force: true })
+    void Promise.all([
+      target.session.sync(sessionID, { force: true }),
+      target.session.todo(sessionID, { force: true }),
+    ])
       .then(() => {
         if (params.id !== sessionID || serverSDK().scope !== scope) return
         showToast({ variant: "success", title: language.t("status.popover.toast.resyncSuccess") })

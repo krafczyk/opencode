@@ -409,6 +409,86 @@ describe("server session", () => {
     expect(store.data.part[parent.id]).toBeUndefined()
   })
 
+  test("reconciles session status during a forced refresh", async () => {
+    const client = messageClient(response(), response())
+    const statuses = [
+      {},
+      { child: { type: "retry" as const, attempt: 2, message: "retrying", next: 10 } },
+    ]
+    let request = 0
+    Object.assign(client.session, {
+      status: async () => ({ data: statuses[request++] }),
+    })
+    const store = createServerSession(
+      client,
+      { get: async () => session("child") } as unknown as SessionApi,
+      {} as MessageApi,
+      { protocol: Promise.resolve("v1") },
+    )
+    store.set("session_status", "child", { type: "busy" })
+
+    await store.sync("child", { force: true })
+    expect(store.data.session_status.child).toEqual({ type: "idle" })
+
+    await store.sync("child", { force: true })
+    expect(store.data.session_status.child).toEqual({
+      type: "retry",
+      attempt: 2,
+      message: "retrying",
+      next: 10,
+    })
+  })
+
+  test("reconciles current active state during a forced refresh", async () => {
+    const active = [{}, { child: { type: "running" as const } }]
+    let request = 0
+    const store = createServerSession(
+      {} as OpencodeClient,
+      {
+        get: async () => session("child"),
+        active: async () => active[request++],
+      } as unknown as SessionApi,
+      {
+        list: async () => ({ data: [], cursor: { previous: null, next: null } }),
+      } as unknown as MessageApi,
+      { protocol: Promise.resolve("v2") },
+    )
+    store.set("session_status", "child", { type: "busy" })
+
+    await store.sync("child", { force: true })
+    expect(store.data.session_status.child).toEqual({ type: "idle" })
+
+    await store.sync("child", { force: true })
+    expect(store.data.session_status.child).toEqual({ type: "busy" })
+  })
+
+  test("preserves a live status update during a forced refresh", async () => {
+    const client = messageClient(response())
+    const status = Promise.withResolvers<{ data: { child: { type: "busy" } } }>()
+    const requested = Promise.withResolvers<void>()
+    Object.assign(client.session, {
+      status: () => {
+        requested.resolve()
+        return status.promise
+      },
+    })
+    const store = createServerSession(
+      client,
+      { get: async () => session("child") } as unknown as SessionApi,
+      {} as MessageApi,
+      { protocol: Promise.resolve("v1") },
+    )
+    store.set("session_status", "child", { type: "busy" })
+
+    const refreshing = store.sync("child", { force: true })
+    await requested.promise
+    store.apply({ type: "session.status", properties: { sessionID: "child", status: { type: "idle" } } })
+    status.resolve({ data: { child: { type: "busy" } } })
+    await refreshing
+
+    expect(store.data.session_status.child).toEqual({ type: "idle" })
+  })
+
   test("does not let an optimistic user suppress initial root backfill", async () => {
     const user = userMessage("message-1")
     const part = textPart(user.id)
