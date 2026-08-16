@@ -251,17 +251,23 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .get()
           .pipe(Effect.orDie)
-        const directory = event.data.registerRoot
-          ? path.join(event.data.location.directory, event.data.subdirectory ?? "")
+        const registerRoot = event.data.subdirectory === "." || (event.data.subdirectory?.startsWith("./") ?? false)
+        const subdirectory = registerRoot
+          ? event.data.subdirectory === "."
+            ? ""
+            : event.data.subdirectory?.slice(2)
+          : event.data.subdirectory
+        const directory = registerRoot
+          ? path.join(event.data.location.directory, subdirectory ?? "")
           : event.data.location.directory
-        if (existing && event.data.registerRoot) {
+        if (existing && registerRoot) {
           yield* directories.create({ projectID: existing.projectID, directory: event.data.location.directory })
         }
         yield* db
           .update(SessionTable)
           .set({
             directory,
-            path: event.data.subdirectory,
+            path: subdirectory,
             workspace_id: event.data.location.workspaceID ? WorkspaceV2.ID.make(event.data.location.workspaceID) : null,
             time_updated: DateTime.toEpochMillis(event.data.timestamp),
           })
