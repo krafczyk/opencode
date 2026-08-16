@@ -273,10 +273,8 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
     if (!sessionID) return
     const target = sync()
     const scope = serverSDK().scope
-    void Promise.all([
-      target.session.sync(sessionID, { force: true }),
-      target.session.todo(sessionID, { force: true }),
-    ])
+    void target.session
+      .resync(sessionID)
       .then(() => {
         if (params.id !== sessionID || serverSDK().scope !== scope) return
         showToast({ variant: "success", title: language.t("status.popover.toast.resyncSuccess") })

@@ -194,7 +194,7 @@ export namespace Timeline {
       const heading = assistantMessages
         .flatMap((message) => getMessageParts(message.id))
         .map((part) => (part.type === "reasoning" && part.text ? reasoningHeading(part.text) : undefined))
-        .find((value): value is string => !!value)
+        .findLast((value): value is string => !!value)
 
       rows.push(
         new TimelineRow.Thinking({
@@ -233,29 +233,15 @@ export namespace Timeline {
 
   function reasoningHeading(text: string) {
     const markdown = text.replace(/\r\n?/g, "\n")
-    const html = markdown.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i)
-    if (html?.[1]) {
-      const value = cleanHeading(html[1].replace(/<[^>]+>/g, " "))
-      if (value) return value
+    const pattern =
+      /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>|^\s{0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$|^([^\n]+)\n(?:=+|-+)\s*$|^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*$/gim
+    let latest: string | undefined
+    for (const match of markdown.matchAll(pattern)) {
+      const value = match[1]?.replace(/<[^>]+>/g, " ") ?? match[2] ?? match[3] ?? match[4] ?? ""
+      const heading = cleanHeading(value)
+      if (heading) latest = heading
     }
-
-    const atx = markdown.match(/^\s{0,3}#{1,6}[ \t]+(.+?)(?:[ \t]+#+[ \t]*)?$/m)
-    if (atx?.[1]) {
-      const value = cleanHeading(atx[1])
-      if (value) return value
-    }
-
-    const setext = markdown.match(/^([^\n]+)\n(?:=+|-+)\s*$/m)
-    if (setext?.[1]) {
-      const value = cleanHeading(setext[1])
-      if (value) return value
-    }
-
-    const strong = markdown.match(/^\s*(?:\*\*|__)(.+?)(?:\*\*|__)\s*$/m)
-    if (strong?.[1]) {
-      const value = cleanHeading(strong[1])
-      if (value) return value
-    }
+    return latest
   }
 
   function cleanHeading(value: string) {

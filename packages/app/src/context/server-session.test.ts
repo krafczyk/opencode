@@ -411,10 +411,7 @@ describe("server session", () => {
 
   test("reconciles session status during a forced refresh", async () => {
     const client = messageClient(response(), response())
-    const statuses = [
-      {},
-      { child: { type: "retry" as const, attempt: 2, message: "retrying", next: 10 } },
-    ]
+    const statuses = [{}, { child: { type: "retry" as const, attempt: 2, message: "retrying", next: 10 } }]
     let request = 0
     Object.assign(client.session, {
       status: async () => ({ data: statuses[request++] }),
@@ -462,6 +459,30 @@ describe("server session", () => {
     expect(store.data.session_status.child).toEqual({ type: "busy" })
   })
 
+  test("skips status refresh when the caller already reconciled an active snapshot", async () => {
+    let requests = 0
+    const store = createServerSession(
+      {} as OpencodeClient,
+      {
+        get: async () => session("child"),
+        active: async () => {
+          requests++
+          return {}
+        },
+      } as unknown as SessionApi,
+      {
+        list: async () => ({ data: [], cursor: { previous: null, next: null } }),
+      } as unknown as MessageApi,
+      { protocol: Promise.resolve("v2") },
+    )
+    store.set("session_status", "child", { type: "busy" })
+
+    await store.sync("child", { force: true, refreshStatus: false })
+
+    expect(requests).toBe(0)
+    expect(store.data.session_status.child).toEqual({ type: "busy" })
+  })
+
   test("preserves a live status update during a forced refresh", async () => {
     const client = messageClient(response())
     const status = Promise.withResolvers<{ data: { child: { type: "busy" } } }>()
@@ -487,6 +508,27 @@ describe("server session", () => {
     await refreshing
 
     expect(store.data.session_status.child).toEqual({ type: "idle" })
+  })
+
+  test("refreshes todos for current-protocol sessions", async () => {
+    const calls: unknown[] = []
+    const todos = [{ content: "Verify recovery", status: "in_progress", priority: "high" }]
+    const client = {
+      session: {
+        todo: async (input: unknown) => {
+          calls.push(input)
+          return { data: todos }
+        },
+      },
+    } as unknown as OpencodeClient
+    const store = createServerSession(client, {} as SessionApi, {} as MessageApi, {
+      protocol: Promise.resolve("v2"),
+    })
+
+    await store.todo("child", { force: true })
+
+    expect(calls).toEqual([{ sessionID: "child" }])
+    expect(store.data.todo.child).toEqual(todos)
   })
 
   test("does not let an optimistic user suppress initial root backfill", async () => {
