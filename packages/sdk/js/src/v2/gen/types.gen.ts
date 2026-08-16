@@ -2547,6 +2547,12 @@ export type NotFoundError = {
   }
 }
 
+export type SessionNotFoundError = {
+  _tag: "SessionNotFoundError"
+  sessionID: string
+  message: string
+}
+
 export type TextPartInput = {
   id?: string
   type: "text"
@@ -2697,12 +2703,6 @@ export type InvalidCursorError = {
 
 export type SessionActive = {
   type: "running"
-}
-
-export type SessionNotFoundError = {
-  _tag: "SessionNotFoundError"
-  sessionID: string
-  message: string
 }
 
 export type PromptInput = {
@@ -3844,6 +3844,32 @@ export type ConfigV2ExperimentalPolicy = {
   resource: string
 }
 
+export type ProjectControlGuardedReloadPayload = {
+  sessionID: string
+}
+
+export type ProjectControlRefusal =
+  | "not_found"
+  | "stale_context"
+  | "blocked"
+  | "control_in_progress"
+  | "malformed_state"
+
+export type ProjectControlGuardedReloadOutcome =
+  | {
+      type: "refused"
+      reason: ProjectControlRefusal
+    }
+  | {
+      type: "completed"
+    }
+  | {
+      type: "recovery_failed"
+    }
+  | {
+      type: "uncertain"
+    }
+
 export type ProjectDirectories = Array<{
   directory: string
   strategy?: string
@@ -3853,6 +3879,134 @@ export type PtyTicketConnectToken = {
   ticket: string
   expires_in: number
 }
+
+export type SessionInspectionLocationClassification =
+  | "primary_worktree"
+  | "recognized_worktree"
+  | "registered_directory"
+  | "unregistered"
+
+export type SessionInspectionDirectory = {
+  directory: string
+  classification: SessionInspectionLocationClassification
+}
+
+export type SessionControlStateActivity = "idle" | "active" | "retrying"
+
+export type SessionControlStatePendingInputs = {
+  steer: number
+  queue: number
+}
+
+export type SessionControlStatePendingInteractions = {
+  permission: number
+  question: number
+}
+
+export type SessionControlStateControl = "none" | "session" | "instance"
+
+export type SessionControlStateSnapshot = {
+  observed: true
+  activity: SessionControlStateActivity
+  pendingInputs: SessionControlStatePendingInputs
+  pendingInteractions: SessionControlStatePendingInteractions
+  control: SessionControlStateControl
+  backgroundJobs: number
+}
+
+export type SessionInspectionSnapshot = {
+  session: {
+    id: string
+    directory: string
+  }
+  project: {
+    id: string
+    primaryDirectory: string
+  }
+  location: {
+    classification: SessionInspectionLocationClassification
+    root?: string
+  }
+  directories: Array<SessionInspectionDirectory>
+  counts: {
+    userPrompts: number
+    completedAssistantResponses: number
+  }
+  control: SessionControlStateSnapshot
+}
+
+export type SessionControlChangeDirectoryPayload = {
+  expectedSource: string
+  destination: string
+}
+
+export type SessionV2Info = {
+  id: string
+  parentID?: string
+  projectID: string
+  agent?: string
+  model?: ModelRef
+  cost: number
+  tokens: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  time: {
+    created: number
+    updated: number
+    archived?: number
+  }
+  title: string
+  location: LocationRef
+  subpath?: string
+  revert?: RevertState
+}
+
+export type SessionControlRefusal =
+  | "not_found"
+  | "stale_source"
+  | "blocked"
+  | "missing_directory"
+  | "not_directory"
+  | "not_git"
+  | "origin_missing"
+  | "origin_mismatch"
+
+export type SessionControlChangeDirectoryOutcome =
+  | {
+      type: "noop"
+      session: SessionV2Info
+    }
+  | {
+      type: "refused"
+      reason: SessionControlRefusal
+    }
+  | {
+      type: "completed"
+      session: SessionV2Info
+    }
+  | {
+      type: "precommit_failed"
+    }
+
+export type SessionControlReloadContextOutcome =
+  | {
+      type: "idle_complete"
+    }
+  | {
+      type: "interrupted_complete"
+    }
+  | {
+      type: "failed_before_reset"
+    }
+  | {
+      type: "recovery_uncertain"
+    }
 
 export type WorkspaceEventConnectionStatus = {
   workspaceID: string
@@ -3900,33 +4054,6 @@ export type AgentV2Info = {
   color?: AgentColor
   steps?: number
   permissions: PermissionV2Ruleset
-}
-
-export type SessionV2Info = {
-  id: string
-  parentID?: string
-  projectID: string
-  agent?: string
-  model?: ModelRef
-  cost: number
-  tokens: {
-    input: number
-    output: number
-    reasoning: number
-    cache: {
-      read: number
-      write: number
-    }
-  }
-  time: {
-    created: number
-    updated: number
-    archived?: number
-  }
-  title: string
-  location: LocationRef
-  subpath?: string
-  revert?: RevertState
 }
 
 export type PromptInputFileAttachment = {
@@ -8109,6 +8236,34 @@ export type InstanceDisposeResponses = {
 
 export type InstanceDisposeResponse = InstanceDisposeResponses[keyof InstanceDisposeResponses]
 
+export type InstanceReloadData = {
+  body?: ProjectControlGuardedReloadPayload
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/instance/reload"
+}
+
+export type InstanceReloadErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type InstanceReloadError = InstanceReloadErrors[keyof InstanceReloadErrors]
+
+export type InstanceReloadResponses = {
+  /**
+   * Guarded instance reload outcome
+   */
+  200: ProjectControlGuardedReloadOutcome
+}
+
+export type InstanceReloadResponse = InstanceReloadResponses[keyof InstanceReloadResponses]
+
 export type PathGetData = {
   body?: never
   path?: never
@@ -9652,6 +9807,100 @@ export type SessionUpdateResponses = {
 }
 
 export type SessionUpdateResponse = SessionUpdateResponses[keyof SessionUpdateResponses]
+
+export type SessionInspectionData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/inspection"
+}
+
+export type SessionInspectionErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  /**
+   * SessionNotFoundError
+   */
+  404: SessionNotFoundError
+}
+
+export type SessionInspectionError = SessionInspectionErrors[keyof SessionInspectionErrors]
+
+export type SessionInspectionResponses = {
+  /**
+   * Authoritative session inspection
+   */
+  200: SessionInspectionSnapshot
+}
+
+export type SessionInspectionResponse = SessionInspectionResponses[keyof SessionInspectionResponses]
+
+export type SessionChangeDirectoryData = {
+  body?: SessionControlChangeDirectoryPayload
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/directory"
+}
+
+export type SessionChangeDirectoryErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionChangeDirectoryError = SessionChangeDirectoryErrors[keyof SessionChangeDirectoryErrors]
+
+export type SessionChangeDirectoryResponses = {
+  /**
+   * Directory change outcome
+   */
+  200: SessionControlChangeDirectoryOutcome
+}
+
+export type SessionChangeDirectoryResponse = SessionChangeDirectoryResponses[keyof SessionChangeDirectoryResponses]
+
+export type SessionReloadContextData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/context/reload"
+}
+
+export type SessionReloadContextErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionReloadContextError = SessionReloadContextErrors[keyof SessionReloadContextErrors]
+
+export type SessionReloadContextResponses = {
+  /**
+   * Session context reload outcome
+   */
+  200: SessionControlReloadContextOutcome
+}
+
+export type SessionReloadContextResponse = SessionReloadContextResponses[keyof SessionReloadContextResponses]
 
 export type SessionChildrenData = {
   body?: never

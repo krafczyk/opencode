@@ -38,6 +38,8 @@ import { SessionRunState } from "@/session/run-state"
 import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionControl } from "@/session/control"
+import { SessionInspection } from "@/session/inspection"
 import { Todo } from "@/session/todo"
 import { SessionShare } from "@/share/session"
 import { ShareNext } from "@/share/share-next"
@@ -59,6 +61,7 @@ import { ModelsDev } from "@opencode-ai/core/models-dev"
 import { Npm } from "@opencode-ai/core/npm"
 import { PermissionSaved } from "@opencode-ai/core/permission/saved"
 import { ProjectV2 } from "@opencode-ai/core/project"
+import { ProjectControl } from "@/project/control"
 import { ProjectCopy } from "@opencode-ai/core/project/copy"
 import { PtyTicket } from "@opencode-ai/core/pty/ticket"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
@@ -245,6 +248,8 @@ const app = LayerNode.group([
   SessionCompaction.node,
   SessionRevert.node,
   SessionSummary.node,
+  SessionControl.node,
+  SessionInspection.node,
   SessionPrompt.node,
   Instruction.node,
   LLM.node,
@@ -256,6 +261,7 @@ const app = LayerNode.group([
   ToolRegistry.node,
   Format.node,
   Project.node,
+  ProjectControl.node,
   Vcs.node,
   Workspace.node,
   Worktree.node,
@@ -305,7 +311,12 @@ export function createRoutes(
     ),
     Layer.provide(locationServiceMapV2),
 
-    Layer.provide(AppNodeBuilderV1.build(app)),
+    Layer.provide(
+      AppNodeBuilderV1.build(app, [
+        [LocationServiceMap.node, locationServiceMapV2],
+        [SessionExecution.node, SessionExecutionLocal.node],
+      ]),
+    ),
     // Must stay last: layers provided later in this pipe build beneath earlier ones,
     // so Observability must come after every service graph. Otherwise eagerly forked
     // fibers (e.g. the ModelsDev background refresh) capture Effect's default stdout

@@ -620,6 +620,15 @@ const scenarios: Scenario[] = [
       check(body === true, "instance dispose should return true")
     }),
   http.protected
+    .post("/instance/reload", "instance.reload")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Guarded reload owner" }))
+    .at((ctx) => ({ path: "/instance/reload", headers: ctx.headers(), body: { sessionID: ctx.state.id } }))
+    .json(200, (body) => {
+      object(body)
+      check(body.type === "completed", "idle guarded reload should report completion")
+    }),
+  http.protected
     .post("/log", "app.log")
     .global()
     .at(() => ({ path: "/log", body: { service: "httpapi-exercise", level: "info", message: "route coverage" } }))
@@ -1193,6 +1202,51 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .status(404),
+  http.protected
+    .get("/session/{sessionID}/inspection", "session.inspection")
+    .seeded((ctx) => ctx.session({ title: "Inspection owner" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/inspection", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      object(body.session)
+      object(body.counts)
+      check(body.session.id === ctx.state.id, "inspection should return the selected session")
+      check(body.session.directory === ctx.directory, "inspection should return the durable session directory")
+      check(body.counts.userPrompts === 0, "inspection should not create a user prompt")
+      check(body.counts.completedAssistantResponses === 0, "inspection should not create an assistant response")
+    }),
+  http.protected
+    .post("/session/{sessionID}/directory", "session.change_directory")
+    .seeded((ctx) => ctx.session({ title: "Directory control owner" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/directory", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { expectedSource: ctx.directory, destination: ctx.directory },
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      object(body.session)
+      check(body.type === "noop", "same-directory controls should report an authoritative no-op")
+      check(body.session.id === ctx.state.id, "no-op should return the selected session")
+      check(
+        isRecord(body.session.location) && body.session.location.directory === ctx.directory,
+        "no-op should return the durable directory",
+      )
+    }),
+  http.protected
+    .post("/session/{sessionID}/context/reload", "session.reload_context")
+    .seeded((ctx) => ctx.session({ title: "Context reload owner" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/context/reload", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      object(body)
+      check(body.type === "idle_complete", "idle context reload should report completion")
+    }),
   http.protected
     .patch("/session/{sessionID}", "session.update")
     .mutating()
