@@ -806,6 +806,7 @@ export const dict = {
   "status.popover.tab.plugins": "Plugins",
   "status.popover.action.manageServers": "Manage servers",
   "status.popover.action.resyncSession": "Re-sync session",
+  "status.popover.toast.resyncSuccess": "Session re-synced",
 
   "session.share.popover.title": "Publish on web",
   "session.share.popover.description.shared":
