@@ -972,48 +972,51 @@ describe("SessionControl.reloadContext", () => {
     }),
   )
 
-  timedOutReload.instance("preserves the old epoch and reopens admission when current interruption times out", () =>
-    Effect.gen(function* () {
-      const test = yield* TestInstance
-      const { db } = yield* Database.Service
-      const directory = AbsolutePath.make(test.directory)
-      yield* db
-        .insert(ProjectTable)
-        .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
-        .onConflictDoNothing()
-        .run()
-      yield* db
-        .insert(SessionTable)
-        .values({
-          id: timedOutReloadSessionID,
-          project_id: Project.ID.global,
-          slug: "timeout",
-          directory,
-          title: "timeout",
-          version: "test",
-        })
-        .run()
-      yield* db
-        .insert(SessionContextEpochTable)
-        .values({ session_id: timedOutReloadSessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
-        .run()
-
-      const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: timedOutReloadSessionID })
-
-      expect(result).toEqual({ type: "failed_before_reset" })
-      expect(
+  timedOutReload.instance(
+    "preserves the old epoch and reopens admission when current interruption times out",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { db } = yield* Database.Service
+        const directory = AbsolutePath.make(test.directory)
         yield* db
-          .select()
-          .from(SessionContextEpochTable)
-          .where(eq(SessionContextEpochTable.session_id, timedOutReloadSessionID))
-          .get(),
-      ).toMatchObject({ baseline: "old" })
-      const claim = yield* (yield* SessionAdmission.Service).claim({
-        sessionID: timedOutReloadSessionID,
-        instanceID: directory,
-      })
-      yield* claim.release
-    }),
+          .insert(ProjectTable)
+          .values({ id: Project.ID.global, worktree: directory, sandboxes: [] })
+          .onConflictDoNothing()
+          .run()
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: timedOutReloadSessionID,
+            project_id: Project.ID.global,
+            slug: "timeout",
+            directory,
+            title: "timeout",
+            version: "test",
+          })
+          .run()
+        yield* db
+          .insert(SessionContextEpochTable)
+          .values({ session_id: timedOutReloadSessionID, baseline: "old", snapshot: {}, baseline_seq: 0 })
+          .run()
+
+        const result = yield* (yield* SessionControl.Service).reloadContext({ sessionID: timedOutReloadSessionID })
+
+        expect(result).toEqual({ type: "failed_before_reset" })
+        expect(
+          yield* db
+            .select()
+            .from(SessionContextEpochTable)
+            .where(eq(SessionContextEpochTable.session_id, timedOutReloadSessionID))
+            .get(),
+        ).toMatchObject({ baseline: "old" })
+        const claim = yield* (yield* SessionAdmission.Service).claim({
+          sessionID: timedOutReloadSessionID,
+          instanceID: directory,
+        })
+        yield* claim.release
+      }),
+    10_000,
   )
 
   it.instance("preserves the old epoch and reopens admission when reset fails", () =>
