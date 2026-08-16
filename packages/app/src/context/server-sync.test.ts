@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { OpencodeClient } from "@opencode-ai/sdk/v2/client"
+import type { OpencodeClient, PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
 import type {
   McpListInput,
   McpResourceCatalogInput,
@@ -10,7 +10,15 @@ import type {
 import { QueryClient } from "@tanstack/solid-query"
 import { canDisposeDirectory, pickDirectoriesToEvict } from "./global-sync/eviction"
 import { estimateRootSessionTotal, loadRootSessions } from "./global-sync/session-load"
-import { loadActiveSessionsQuery, loadMcpQuery, loadMcpResourcesQuery, seedActiveSessionStatuses } from "./server-sync"
+import {
+  loadActiveSessionsQuery,
+  loadMcpQuery,
+  loadMcpResourcesQuery,
+  reconcileActiveSessionStatuses,
+  resyncSessionRequests,
+  resyncSessionState,
+  seedActiveSessionStatuses,
+} from "./server-sync"
 import { ServerScope } from "@/utils/server-scope"
 import { createServerSession } from "./server-session"
 import type { ServerApi } from "@/utils/server"
@@ -99,6 +107,87 @@ describe("active session query", () => {
       message: "retrying",
       next: 10,
     })
+  })
+
+  test("clears statuses for runs that finished while the stream was down", () => {
+    const session = createServerSession({} as OpencodeClient)
+    session.set("session_status", "ses_done", { type: "busy" })
+    session.set("session_status", "ses_running", { type: "busy" })
+
+    reconcileActiveSessionStatuses(session, { ses_running: { type: "running" } })
+
+    expect(session.data.session_status.ses_done).toEqual({ type: "idle" })
+    expect(session.data.session_status.ses_running).toEqual({ type: "busy" })
+  })
+
+  test("fully resyncs each cached session once", async () => {
+    const calls: string[] = []
+    await resyncSessionState({
+      sessionIDs: ["ses_a", "ses_a", "ses_b"],
+      session: {
+        sync: async (sessionID: string) => void calls.push(`sync:${sessionID}`),
+        todo: async (sessionID: string) => void calls.push(`todo:${sessionID}`),
+      },
+      requests: async (sessionIDs) => void calls.push(`requests:${sessionIDs.join(",")}`),
+    })
+
+    expect(calls.sort()).toEqual(["requests:ses_a,ses_b", "sync:ses_a", "sync:ses_b", "todo:ses_a", "todo:ses_b"])
+  })
+
+  test("reloads pending questions and permissions once per directory", async () => {
+    const calls: string[] = []
+    const session = createServerSession({} as OpencodeClient)
+    const info = (id: string): Session => ({
+      id,
+      slug: id,
+      projectID: "project",
+      directory: "/repo",
+      title: id,
+      version: "1",
+      time: { created: 1, updated: 1 },
+    })
+    session.remember(info("ses_a"))
+    session.remember(info("ses_b"))
+    await resyncSessionRequests({
+      sessionIDs: ["ses_a", "ses_b"],
+      session,
+      load: async (directory) => {
+        calls.push(directory)
+        return {
+          permissions: [
+            {
+              id: "perm_z",
+              sessionID: "ses_a",
+              permission: "read",
+              patterns: ["*"],
+              metadata: {},
+              always: [],
+            } as PermissionRequest,
+            {
+              id: "perm_a",
+              sessionID: "ses_a",
+              permission: "write",
+              patterns: ["*"],
+              metadata: {},
+              always: [],
+            } as PermissionRequest,
+          ],
+          questions: [
+            {
+              id: "question",
+              sessionID: "ses_b",
+              questions: [{ question: "Continue?", header: "Continue", options: [] }],
+            } as QuestionRequest,
+          ],
+        }
+      },
+    })
+
+    expect(calls).toEqual(["/repo"])
+    expect(session.data.permission.ses_a?.map((item) => item.id)).toEqual(["perm_a", "perm_z"])
+    expect(session.data.permission.ses_b).toEqual([])
+    expect(session.data.question.ses_a).toEqual([])
+    expect(session.data.question.ses_b?.map((item) => item.id)).toEqual(["question"])
   })
 })
 
