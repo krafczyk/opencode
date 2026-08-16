@@ -304,10 +304,11 @@ export function createTuiApiAdapters(input: Input): Omit<TuiPluginApi, "lifecycl
       async reconcile(sessionID) {
         try {
           const session = await input.sync.session.reconcile(sessionID)
-          input.editor.reconnect(session.directory)
-          if (input.route.data.type === "session" && input.route.data.sessionID === sessionID) {
-            input.route.navigate({ type: "session", sessionID })
+          if (input.route.data.type !== "session" || input.route.data.sessionID !== sessionID) {
+            return { directory: session.directory }
           }
+          input.editor.reconnect(session.directory)
+          input.route.navigate({ type: "session", sessionID })
           return { directory: session.directory }
         } catch (error) {
           if (input.route.data.type === "session" && input.route.data.sessionID === sessionID) {

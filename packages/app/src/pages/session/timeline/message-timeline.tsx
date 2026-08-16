@@ -61,6 +61,7 @@ import { useFileComponent } from "@opencode-ai/ui/context/file"
 import { shouldMarkBoundaryGesture, normalizeWheelDelta } from "@/pages/session/message-gesture"
 import { SessionContextUsage } from "@/components/session-context-usage"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { useCommand } from "@/context/command"
 import { useLanguage } from "@/context/language"
 import { useSessionKey } from "@/pages/session/session-layout"
 import { useServerSDK } from "@/context/server-sdk"
@@ -265,6 +266,7 @@ export function MessageTimeline(props: {
   const settings = useSettings()
   const tabs = useTabs()
   const dialog = useDialog()
+  const command = useCommand()
   const language = useLanguage()
   const { params, sessionKey } = useSessionKey()
   const ownerSessionKey = sessionKey()
@@ -1590,15 +1592,7 @@ export function MessageTimeline(props: {
                                     </DropdownMenu.ItemLabel>
                                   </DropdownMenu.Item>
                                 </Show>
-                                <DropdownMenu.Item
-                                  onSelect={() => {
-                                    const key = sessionKey()
-                                    void import("@/components/dialog-session-controls").then((x) => {
-                                      if (sessionKey() !== key) return
-                                      dialog.show(() => <x.DialogSessionControls />)
-                                    })
-                                  }}
-                                >
+                                <DropdownMenu.Item onSelect={() => command.trigger("session.controls")}>
                                   <DropdownMenu.ItemLabel>
                                     {language.t("command.session.controls")}
                                   </DropdownMenu.ItemLabel>
@@ -1677,15 +1671,7 @@ export function MessageTimeline(props: {
                                   {language.t("session.share.action.share")}...
                                 </MenuV2.Item>
                               </Show>
-                              <MenuV2.Item
-                                onSelect={() => {
-                                  const key = sessionKey()
-                                  void import("@/components/dialog-session-controls").then((x) => {
-                                    if (sessionKey() !== key) return
-                                    dialog.show(() => <x.DialogSessionControls />)
-                                  })
-                                }}
-                              >
+                              <MenuV2.Item onSelect={() => command.trigger("session.controls")}>
                                 {language.t("command.session.controls")}
                               </MenuV2.Item>
                               <MenuV2.Item onSelect={() => exportSession(id)}>

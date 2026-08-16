@@ -15,9 +15,11 @@ import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionControl } from "@/session/control"
 import { SessionInspection } from "@/session/inspection"
+import { ProjectControl } from "@/project/control"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
+import { AbsolutePath } from "@opencode-ai/core/schema"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
@@ -63,6 +65,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const control = yield* SessionControl.Service
     const inspection = yield* SessionInspection.Service
+    const projectControl = yield* ProjectControl.Service
     const events = yield* EventV2Bridge.Service
     const scope = yield* Scope.Scope
 
@@ -109,6 +112,15 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof ChangeDirectoryPayload.Type
     }) {
       return yield* control.changeDirectory({ sessionID: ctx.params.sessionID, ...ctx.payload })
+    })
+
+    const reloadProject = Effect.fn("SessionHttpApi.reloadProject")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      return yield* projectControl.reload({
+        sessionID: ctx.params.sessionID,
+        directory: AbsolutePath.make(yield* InstanceState.directory),
+      })
     })
 
     const reloadContext = Effect.fn("SessionHttpApi.reloadContext")(function* (ctx: {
@@ -448,6 +460,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("status", status)
       .handle("get", get)
       .handle("inspection", inspect)
+      .handle("reloadProject", reloadProject)
       .handle("changeDirectory", changeDirectory)
       .handle("reloadContext", reloadContext)
       .handle("children", children)

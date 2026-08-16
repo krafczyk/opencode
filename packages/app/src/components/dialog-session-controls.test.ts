@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { sessionActivityKey, sessionControlFeedback, sessionLocationKey } from "./dialog-session-controls"
+import {
+  runReconciledControl,
+  sessionActivityKey,
+  sessionControlFeedback,
+  sessionLocationKey,
+} from "./dialog-session-controls"
+
+type ControlOutcome = { type: "completed" } | { type: "refused" }
 
 describe("session control feedback", () => {
   test("keeps typed server outcomes distinct", () => {
@@ -21,5 +28,47 @@ describe("session control feedback", () => {
     expect(sessionActivityKey("idle")).toBe("session.controls.activity.idle")
     expect(sessionActivityKey("active")).toBe("session.controls.activity.active")
     expect(sessionActivityKey("retrying")).toBe("session.controls.activity.retrying")
+  })
+
+  test("forces reconciliation only after successful server mutations", async () => {
+    const calls: string[] = []
+    const completed = await runReconciledControl({
+      mutate: async () => {
+        calls.push("mutate")
+        return { type: "completed" as const }
+      },
+      reconcileWhen: (outcome) => outcome.type === "completed",
+      reconcile: async () => {
+        calls.push("reconcile")
+      },
+    })
+    const refused = await runReconciledControl({
+      mutate: async (): Promise<ControlOutcome> => ({ type: "refused" }),
+      reconcileWhen: (outcome) => outcome.type === "completed",
+      reconcile: async () => {
+        calls.push("unexpected")
+      },
+    })
+
+    expect(completed).toEqual({ outcome: { type: "completed" }, reconciled: true })
+    expect(refused).toEqual({ outcome: { type: "refused" }, reconciled: true })
+    expect(calls).toEqual(["mutate", "reconcile"])
+  })
+
+  test("reports a distinct reconciliation failure without retrying the mutation", async () => {
+    let mutations = 0
+    const result = await runReconciledControl({
+      mutate: async () => {
+        mutations += 1
+        return { type: "completed" as const }
+      },
+      reconcileWhen: () => true,
+      reconcile: async () => {
+        throw new Error("stale client")
+      },
+    })
+
+    expect(result).toEqual({ outcome: { type: "completed" }, reconciled: false })
+    expect(mutations).toBe(1)
   })
 })

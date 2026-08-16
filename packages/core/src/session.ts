@@ -375,9 +375,18 @@ const layer = Layer.effect(
         Effect.uninterruptible(
           Effect.gen(function* () {
             const recorded = yield* result.get(input.sessionID)
+            const instanceID = SessionAdmission.InstanceID.make(FSUtil.resolve(recorded.location.directory))
             return yield* admission.withClaim(
-              { sessionID: input.sessionID, instanceID: recorded.location.directory },
+              { sessionID: input.sessionID, instanceID },
               Effect.gen(function* () {
+                const current = yield* result.get(input.sessionID)
+                if (FSUtil.resolve(current.location.directory) !== instanceID) {
+                  return yield* new SessionAdmission.ControlInProgressError({
+                    scope: "session",
+                    sessionID: input.sessionID,
+                    instanceID,
+                  })
+                }
                 const prompt = resolvePrompt(input.prompt)
                 const messageID = input.id ?? SessionMessage.ID.create()
                 const delivery = input.delivery ?? "steer"

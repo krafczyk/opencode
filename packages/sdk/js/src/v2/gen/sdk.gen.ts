@@ -90,8 +90,6 @@ import type {
   GlobalUpgradeResponses,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
-  InstanceReloadErrors,
-  InstanceReloadResponses,
   LocationRef,
   LspStatusErrors,
   LspStatusResponses,
@@ -133,7 +131,6 @@ import type {
   PermissionV2Reply,
   PermissionV2Source,
   ProjectCommands,
-  ProjectControlGuardedReloadPayload,
   ProjectCurrentErrors,
   ProjectCurrentResponses,
   ProjectDirectoriesErrors,
@@ -215,6 +212,8 @@ import type {
   SessionPromptResponses,
   SessionReloadContextErrors,
   SessionReloadContextResponses,
+  SessionReloadProjectErrors,
+  SessionReloadProjectResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
@@ -1962,43 +1961,6 @@ export class Instance extends HeyApiClient {
       ...params,
     })
   }
-
-  /**
-   * Reload selected session instance
-   *
-   * Reload only the exact instance derived from the selected session after server-side blocker validation. This operation creates no prompt, message, or model turn.
-   */
-  public reload<ThrowOnError extends boolean = false>(
-    parameters?: {
-      directory?: string
-      workspace?: string
-      projectControlGuardedReloadPayload?: ProjectControlGuardedReloadPayload
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-            { key: "projectControlGuardedReloadPayload", map: "body" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<InstanceReloadResponses, InstanceReloadErrors, ThrowOnError>({
-      url: "/instance/reload",
-      ...options,
-      ...params,
-      headers: {
-        "Content-Type": "application/json",
-        ...options?.headers,
-        ...params.headers,
-      },
-    })
-  }
 }
 
 export class Path extends HeyApiClient {
@@ -3680,6 +3642,42 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Reload selected session instance
+   *
+   * Reload only the exact instance derived from the selected session after server-side blocker validation. This operation creates no prompt, message, or model turn.
+   */
+  public reloadProject<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      SessionReloadProjectResponses,
+      SessionReloadProjectErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/instance/reload",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Change session directory
    *
    * Change only the selected session's durable directory after server validation. This operation never changes either working tree.
@@ -3689,7 +3687,7 @@ export class Session2 extends HeyApiClient {
       sessionID: string
       directory?: string
       workspace?: string
-      sessionControlChangeDirectoryPayload?: SessionControlChangeDirectoryPayload
+      sessionControlChangeDirectoryPayload: SessionControlChangeDirectoryPayload
     },
     options?: Options<never, ThrowOnError>,
   ) {

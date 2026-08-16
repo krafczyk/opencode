@@ -274,10 +274,9 @@ describe("instance HttpApi", () => {
           Effect.flatMap(HttpClient.execute),
         )
         const session = (yield* created.json) as { id: string }
-        const response = yield* HttpClientRequest.post("/instance/reload").pipe(
+        const response = yield* HttpClientRequest.post(`/session/${session.id}/instance/reload`).pipe(
           directoryHeader(dir),
-          HttpClientRequest.bodyJson({ sessionID: session.id }),
-          Effect.flatMap(HttpClient.execute),
+          HttpClient.execute,
         )
 
         expect(response.status).toBe(200)
