@@ -185,6 +185,18 @@ function reconcileFetched<T extends { id: string }>(
 
 type ServerSessionOptions = { retry?: typeof retry; protocol?: Promise<"v1" | "v2"> }
 
+/**
+ * Creates the reactive server-wide session cache used by directory views.
+ *
+ * Session and message APIs provide authoritative reads while event handlers keep cached state current. Network-backed
+ * methods reject when their request fails and update the shared cache as a side effect.
+ *
+ * @param client Legacy SDK client used for v1 session reads.
+ * @param sessionApiOrOptions Current session API, or options when current APIs are omitted.
+ * @param messageApi Current message API when available.
+ * @param currentOptions Retry and protocol options used with current APIs.
+ * @returns Reactive session data and methods for loading, mutating, and evicting cached session state.
+ */
 export function createServerSession(
   client: OpencodeClient,
   sessionApiOrOptions?: SessionApi | ServerSessionOptions,
@@ -208,6 +220,14 @@ export function createServerSession(
       return (this.session_status[id]?.type ?? "idle") !== "idle"
     },
   })
+  const statusLoads = new Map<string, { touched: boolean }>()
+  const set = ((...input: unknown[]) => {
+    if (input[0] === "session_status" && typeof input[1] === "string") {
+      const load = statusLoads.get(input[1])
+      if (load) load.touched = true
+    }
+    return (setData as (...args: unknown[]) => unknown)(...input)
+  }) as typeof setData
   const requests = new Map<string, Promise<Session>>()
   const inflight = new Map<string, Promise<void>>()
   const forcedSync = new Map<string, Promise<void>>()
@@ -484,6 +504,7 @@ export function createServerSession(
     }
     sessionIDs.forEach((sessionID) => {
       generations.delete(sessionID)
+      statusLoads.delete(sessionID)
       clearOptimistic(sessionID)
       requests.delete(sessionID)
       inflight.delete(sessionID)
@@ -836,6 +857,26 @@ export function createServerSession(
     }
   }
 
+  const refreshStatus = async (sessionID: string) => {
+    const load = { touched: false }
+    statusLoads.set(sessionID, load)
+    try {
+      const protocol = await options?.protocol
+      if (!protocol) return
+      if (protocol !== "v1" && !sessionApi) return
+      const status =
+        protocol === "v1"
+          ? ((await client.session.status()).data?.[sessionID] ?? { type: "idle" as const })
+          : (await sessionApi!.active())[sessionID]
+            ? { type: "busy" as const }
+            : { type: "idle" as const }
+      if (statusLoads.get(sessionID) !== load || load.touched) return
+      setData("session_status", sessionID, reconcile(status))
+    } finally {
+      if (statusLoads.get(sessionID) === load) statusLoads.delete(sessionID)
+    }
+  }
+
   const sync = (sessionID: string, options?: { force?: boolean; messageLimit?: number }) => {
     touch(sessionID)
     if (options?.force) {
@@ -850,6 +891,7 @@ export function createServerSession(
           await Promise.all([
             resolve(sessionID, { force: true }),
             loadMessages(sessionID, options.messageLimit ?? meta.limit[sessionID] ?? initialMessagePageSize),
+            refreshStatus(sessionID),
           ])
         })
       })()
@@ -984,15 +1026,15 @@ export function createServerSession(
     //   if (info) remember({ ...info, time: { ...info.time, archived: event.created, updated: event.created } })
     //   evict([sessionID])
     // }
-    if (event.type === "session.execution.started") setData("session_status", sessionID, { type: "busy" })
+    if (event.type === "session.execution.started") set("session_status", sessionID, { type: "busy" })
     if (
       event.type === "session.execution.succeeded" ||
       event.type === "session.execution.failed" ||
       event.type === "session.execution.interrupted"
     )
-      setData("session_status", sessionID, { type: "idle" })
+      set("session_status", sessionID, { type: "idle" })
     if (event.type === "session.retry.scheduled")
-      setData("session_status", sessionID, {
+      set("session_status", sessionID, {
         type: "retry",
         attempt: event.data.attempt,
         message: event.data.error.message,
@@ -1048,7 +1090,7 @@ export function createServerSession(
       }
       case "session.status": {
         const props = event.properties as { sessionID: string; status: SessionStatus }
-        setData("session_status", props.sessionID, reconcile(props.status))
+        set("session_status", props.sessionID, reconcile(props.status))
         return
       }
       case "message.updated": {
@@ -1319,7 +1361,7 @@ export function createServerSession(
 
   return {
     data,
-    set: setData,
+    set,
     get: (sessionID: string) => data.info[sessionID],
     peek: (sessionID: string) => data.info[sessionID],
     remember,
