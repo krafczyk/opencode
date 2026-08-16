@@ -31,6 +31,7 @@ import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionAdmission } from "@opencode-ai/core/session/admission"
 import { SessionRunCoordinator } from "@opencode-ai/core/session/run-coordinator"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import * as SessionRunnerLLM from "@opencode-ai/core/session/runner/llm"
@@ -272,6 +273,7 @@ const it = testEffect(
       Snapshot.node,
       SessionRunnerLLM.node,
       SessionExecution.node,
+      SessionAdmission.node,
       SessionV2.node,
     ]),
     [
@@ -555,6 +557,37 @@ const verifyPartialFlushOnInterruption = (kind: FragmentKind) =>
   })
 
 describe("SessionRunnerLLM", () => {
+  it.effect("refuses session and instance fenced resumes before provider work", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const admission = yield* SessionAdmission.Service
+      requests.length = 0
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Do not call the provider" }), resume: false })
+
+      const sessionFailure = yield* admission.withSessionControl(
+        { sessionID, instanceID: "/project" },
+        session.resume(sessionID).pipe(Effect.flip),
+      )
+      const instanceFailure = yield* admission.withInstanceControl(
+        "/project",
+        session.resume(sessionID).pipe(Effect.flip),
+      )
+
+      expect(sessionFailure).toMatchObject({
+        _tag: "SessionAdmission.ControlInProgressError",
+        scope: "session",
+        sessionID,
+      })
+      expect(instanceFailure).toMatchObject({
+        _tag: "SessionAdmission.ControlInProgressError",
+        scope: "instance",
+        sessionID,
+      })
+      expect(requests).toEqual([])
+    }),
+  )
+
   it.effect("advertises and executes a globally attached application tool", () =>
     Effect.gen(function* () {
       yield* setup
