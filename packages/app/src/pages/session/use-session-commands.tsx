@@ -421,6 +421,13 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
     )
   }
 
+  const controls = () => {
+    void openDialog(
+      () => import("@/components/dialog-session-controls"),
+      (x) => dialog.show(() => <x.DialogSessionControls />),
+    )
+  }
+
   const shareCmds = () => {
     if (sync().data.config.share === "disabled") return []
     return [
@@ -490,6 +497,13 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
       slash: "fork",
       disabled: !params.id || visibleUserMessages().length === 0,
       onSelect: fork,
+    }),
+    sessionCommand({
+      id: "session.controls",
+      title: language.t("command.session.controls"),
+      description: language.t("command.session.controls.description"),
+      disabled: !params.id,
+      onSelect: controls,
     }),
     sessionCommand({
       id: "session.export",
