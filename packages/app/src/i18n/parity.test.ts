@@ -65,6 +65,44 @@ const appLocales = [
   "uz",
 ] as const
 const desktopLocales = appLocales
+// The runtime merges every locale over English. Keep new controls on that explicit fallback
+// until reviewed translations are supplied instead of inventing localized safety feedback.
+const englishFallbackKeys = new Set([
+  "command.session.controls",
+  "command.session.controls.description",
+  "session.controls.directory",
+  "session.controls.project",
+  "session.controls.location",
+  "session.controls.activity",
+  "session.controls.location.primary_worktree",
+  "session.controls.location.recognized_worktree",
+  "session.controls.location.registered_directory",
+  "session.controls.location.unregistered",
+  "session.controls.activity.idle",
+  "session.controls.activity.active",
+  "session.controls.activity.retrying",
+  "session.controls.userPrompts",
+  "session.controls.assistantResponses",
+  "session.controls.destination",
+  "session.controls.reloadProject",
+  "session.controls.changeDirectory",
+  "session.controls.reloadContext",
+  "session.controls.reload.refused",
+  "session.controls.reload.completed",
+  "session.controls.reload.recovery_failed",
+  "session.controls.reload.uncertain",
+  "session.controls.reload.reconciliation_failed",
+  "session.controls.directory.noop",
+  "session.controls.directory.refused",
+  "session.controls.directory.precommit_failed",
+  "session.controls.directory.completed",
+  "session.controls.directory.reconciliation_failed",
+  "session.controls.context.idle_complete",
+  "session.controls.context.interrupted_complete",
+  "session.controls.context.failed_before_reset",
+  "session.controls.context.recovery_uncertain",
+  "status.popover.action.resyncSession",
+])
 const pluralCategories = new Map(
   appLocales.map(
     (locale) =>
@@ -102,7 +140,9 @@ describe("i18n parity", () => {
       const source = await dictionary(domain.source)
       for (const locale of domain.locales) {
         const target = await dictionary(domain.target(locale))
-        const missing = Object.keys(source).filter((key) => !Object.hasOwn(target, key))
+        const missing = Object.keys(source).filter(
+          (key) => !Object.hasOwn(target, key) && !englishFallbackKeys.has(key),
+        )
         const extra = Object.keys(target)
           .filter((key) => !Object.hasOwn(source, key))
           .sort()
@@ -140,6 +180,11 @@ describe("i18n parity", () => {
         })
       }
     }
+  })
+
+  test("session control fallback keys have English source copy", async () => {
+    const source = await dictionary("./en.ts")
+    for (const key of englishFallbackKeys) expect(source[key]).toBeDefined()
   })
 
   test("non-English locales translate targeted unseen session keys", async () => {
