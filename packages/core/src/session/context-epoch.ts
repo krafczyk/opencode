@@ -1,6 +1,6 @@
 export * as SessionContextEpoch from "./context-epoch"
 
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { DateTime, Effect, Schema } from "effect"
 import type { Database } from "../database/database"
 import { EventV2 } from "../event"
@@ -108,11 +108,18 @@ const find = Effect.fn("SessionContextEpoch.find")(function* (db: DatabaseServic
     .pipe(Effect.orDie)
 })
 
-/** Deletes one session's cached context epoch so its next runner turn initializes a fresh location-derived baseline. */
+/**
+ * Deletes one session's cached context epoch so its next runner turn initializes a fresh location-derived baseline.
+ * Databases without the transitional context-epoch table have no cached epoch to clear and are left unchanged.
+ */
 export const reset = Effect.fn("SessionContextEpoch.reset")(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
 ) {
+  const table = yield* db
+    .get(sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ${"session_context_epoch"}`)
+    .pipe(Effect.orDie)
+  if (!table) return
   yield* db
     .delete(SessionContextEpochTable)
     .where(eq(SessionContextEpochTable.session_id, sessionID))
