@@ -153,6 +153,30 @@ describe("ConfigV2Compat.lower", () => {
     expect(() => lower({ snapshot: "invalid", snapshots: true })).toThrow()
   })
 
+  test("preserves V1 compaction settings beside representative plugin and agent configuration", () => {
+    const input = ConfigParse.jsonc(
+      `{
+        // Keep ordinary V1 settings through the compatibility path.
+        "plugin": ["example-plugin@1.0.0"],
+        "agent": { "reviewer": { "model": "test/test-model" } },
+        "compaction": {
+          "auto": true,
+          "prune": true,
+          "reserved": 20000,
+          "preserve_recent_tokens": 8000
+        }
+      }`,
+      source,
+    )
+    const result = ConfigV2Compat.lower(input, source)
+    const config = ConfigParse.schema(ConfigV1.Info, result.value, source)
+
+    expect(result.diagnostics).toEqual([])
+    expect(config.plugin).toEqual(["example-plugin@1.0.0"])
+    expect(config.agent?.reviewer?.model).toBe("test/test-model")
+    expect(config.compaction).toEqual({ auto: true, prune: true, reserved: 20_000, preserve_recent_tokens: 8_000 })
+  })
+
   test("keeps malformed MCP servers named servers and timeout for V1 validation", () => {
     expect(() => lower({ mcp: { servers: { type: "local", command: "invalid" } } })).toThrow()
     expect(() => lower({ mcp: { timeout: { type: "remote", url: 42 } } })).toThrow()

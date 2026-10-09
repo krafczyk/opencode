@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { isOverflow, usable } from "../../src/session/overflow"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
 import { provideTmpdirInstance, TestInstance } from "../fixture/fixture"
@@ -380,6 +381,78 @@ function compactionContext(context: string) {
 }
 
 describe("session.compaction.isOverflow", () => {
+  test("caps both large usable threshold branches at 180K", () => {
+    const config = Schema.decodeUnknownSync(ConfigV1.Info)({}) as ConfigV1.Info
+    const inputLimited = createModel({ context: 1_000_000, input: 900_000, output: 128_000 })
+    const outputLimited = createModel({ context: 1_000_000, output: 128_000 })
+
+    expect(usable({ cfg: config, model: inputLimited })).toBe(180_000)
+    expect(usable({ cfg: config, model: outputLimited, outputTokenMax: 32_000 })).toBe(180_000)
+    expect(
+      isOverflow({
+        cfg: config,
+        model: inputLimited,
+        tokens: { input: 179_999, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      }),
+    ).toBe(false)
+    expect(
+      isOverflow({
+        cfg: config,
+        model: inputLimited,
+        tokens: { input: 180_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      }),
+    ).toBe(true)
+  })
+
+  test("preserves lower natural thresholds and accounting behavior", () => {
+    const config = Schema.decodeUnknownSync(ConfigV1.Info)({}) as ConfigV1.Info
+    const reserved = Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { reserved: 8_000 } }) as ConfigV1.Info
+    const inputLimited = createModel({ context: 128_000, input: 112_000, output: 32_000 })
+    const outputLimited = createModel({ context: 160_000, output: 128_000 })
+    const equalLimit = createModel({ context: 200_000, input: 200_000, output: 32_000 })
+    const zeroLimit = createModel({ context: 100_000, input: 10_000, output: 32_000 })
+    const large = createModel({ context: 1_000_000, input: 900_000, output: 128_000 })
+
+    expect(usable({ cfg: config, model: inputLimited })).toBe(92_000)
+    expect(usable({ cfg: config, model: outputLimited, outputTokenMax: 32_000 })).toBe(128_000)
+    expect(usable({ cfg: config, model: equalLimit })).toBe(180_000)
+    expect(usable({ cfg: config, model: zeroLimit })).toBe(0)
+    expect(usable({ cfg: reserved, model: createModel({ context: 100_000, input: 100_000, output: 32_000 }) })).toBe(
+      92_000,
+    )
+    expect(usable({ cfg: reserved, model: createModel({ context: 100_000, output: 32_000 }) })).toBe(68_000)
+    expect(usable({ cfg: config, model: createModel({ context: 0, output: 32_000 }) })).toBe(0)
+
+    expect(
+      isOverflow({
+        cfg: config,
+        model: large,
+        tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 1, write: 1 }, total: 180_000 },
+      }),
+    ).toBe(true)
+    expect(
+      isOverflow({
+        cfg: config,
+        model: large,
+        tokens: { input: 90_000, output: 40_000, reasoning: 999_999, cache: { read: 25_000, write: 25_000 }, total: 0 },
+      }),
+    ).toBe(true)
+    expect(
+      isOverflow({
+        cfg: config,
+        model: large,
+        tokens: { input: 179_999, output: 0, reasoning: 999_999, cache: { read: 0, write: 0 } },
+      }),
+    ).toBe(false)
+    expect(
+      isOverflow({
+        cfg: Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { auto: false } }) as ConfigV1.Info,
+        model: large,
+        tokens: { input: 230_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      }),
+    ).toBe(false)
+  })
+
   it.live(
     "returns true when token count exceeds usable context",
     provideTmpdirInstance(() =>
@@ -422,7 +495,7 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 400_000, input: 272_000, output: 128_000 })
-        const tokens = { input: 271_000, output: 1_000, reasoning: 0, cache: { read: 2_000, write: 0 } }
+        const tokens = { input: 200_000, output: 20_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
@@ -434,7 +507,7 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 400_000, input: 272_000, output: 128_000 })
-        const tokens = { input: 200_000, output: 20_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
+        const tokens = { input: 140_000, output: 20_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
       }),
     ),
@@ -452,20 +525,8 @@ describe("session.compaction.isOverflow", () => {
     ),
   )
 
-  // ─── Bug reproduction tests ───────────────────────────────────────────
-  // These tests demonstrate that when limit.input is set, isOverflow()
-  // does not subtract any headroom for the next model response. This means
-  // compaction only triggers AFTER we've already consumed the full input
-  // budget, leaving zero room for the next API call's output tokens.
-  //
-  // Compare: without limit.input, usable = context - output (reserves space).
-  // With limit.input, usable = limit.input (reserves nothing).
-  //
-  // Related issues: #10634, #8089, #11086, #12621
-  // Open PRs: #6875, #12924
-
   it.live(
-    "BUG: no headroom when limit.input is set — compaction should trigger near boundary but does not",
+    "reserves headroom when an input limit is set",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
@@ -477,21 +538,14 @@ describe("session.compaction.isOverflow", () => {
         // plus the model needs room to generate output — this WILL overflow.
         const tokens = { input: 180_000, output: 15_000, reasoning: 0, cache: { read: 3_000, write: 0 } }
         // count = 180K + 3K + 15K = 198K
-        // usable = limit.input = 200K (no output subtracted!)
-        // 198K > 200K = false → no compaction triggered
-
-        // WITHOUT limit.input: usable = 200K - 32K = 168K, and 198K > 168K = true ✓
-        // WITH limit.input: usable = 200K, and 198K > 200K = false ✗
-
-        // With 198K used and only 2K headroom, the next turn will overflow.
-        // Compaction MUST trigger here.
+        // usable = limit.input - reserved = 200K - 20K = 180K
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
   )
 
   it.live(
-    "BUG: without limit.input, same token count correctly triggers compaction",
+    "uses context minus output when the model has no input limit",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
@@ -511,7 +565,7 @@ describe("session.compaction.isOverflow", () => {
   )
 
   it.live(
-    "BUG: asymmetry — limit.input model allows 30K more usage before compaction than equivalent model without it",
+    "applies each model's natural reserved threshold",
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
@@ -519,15 +573,14 @@ describe("session.compaction.isOverflow", () => {
         const withInputLimit = createModel({ context: 200_000, input: 200_000, output: 32_000 })
         const withoutInputLimit = createModel({ context: 200_000, output: 32_000 })
 
-        // 170K total tokens — well above context-output (168K) but below input limit (200K)
+        // 181K total tokens — above the input-limit reserve (180K) and context-output limit (168K)
         const tokens = { input: 166_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } }
 
         const withLimit = yield* compact.isOverflow({ tokens, model: withInputLimit })
         const withoutLimit = yield* compact.isOverflow({ tokens, model: withoutInputLimit })
 
-        // Both models have identical real capacity — they should agree:
-        expect(withLimit).toBe(true) // should compact (170K leaves no room for 32K output)
-        expect(withoutLimit).toBe(true) // correctly compacts (170K > 168K)
+        expect(withLimit).toBe(true)
+        expect(withoutLimit).toBe(true)
       }),
     ),
   )
@@ -538,7 +591,7 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 0, output: 32_000 })
-        const tokens = { input: 100_000, output: 10_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        const tokens = { input: 230_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(false)
       }),
     ),
@@ -985,6 +1038,51 @@ describe("session.compaction.process", () => {
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(keep.id)
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 100 }) })),
+  )
+
+  itCompaction.instance(
+    "uses the 15K default recent-history budget for a medium-sized prior turn",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "older plan marker")
+      const medium = yield* createUserMessage(session.id, "m".repeat(40_000))
+      yield* createUserMessage(session.id, "recent task marker")
+      yield* createSummaryCompaction(session.id)
+
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      const parent = msgs.at(-1)?.info.id
+      expect(parent).toBeTruthy()
+      yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+      const part = yield* readCompactionPart(session.id)
+      expect(part?.type).toBe("compaction")
+      expect(part?.tail_start_id).toBe(medium.id)
+    }).pipe(withCompaction({ config: cfg({ tail_turns: 2 }) })),
+  )
+
+  itCompaction.instance(
+    "uses an explicit 8K recent-history budget for compaction",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "older plan marker")
+      const excluded = yield* createUserMessage(session.id, "m".repeat(40_000))
+      const kept = yield* createUserMessage(session.id, "recent task marker")
+      yield* createSummaryCompaction(session.id)
+
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      const parent = msgs.at(-1)?.info.id
+      expect(parent).toBeTruthy()
+      yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
+
+      const part = yield* readCompactionPart(session.id)
+      expect(part?.type).toBe("compaction")
+      expect(part?.tail_start_id).toBe(kept.id)
+      const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+      expect(filtered.map((message) => message.info.id)).toContain(kept.id)
+      expect(filtered.map((message) => message.info.id)).not.toContain(excluded.id)
+    }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 8_000 }) })),
   )
 
   itCompaction.instance(
