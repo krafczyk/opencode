@@ -125,6 +125,10 @@ remain separate from this compile-time policy.
 
 #### Release Administration
 
+The [1.18.35 MkChad port notes](docs/releases/1.18.35-mkchad.1.md) record the
+upstream baseline, preserved fork behavior, and verification for the local
+`1.18.35-mkchad.1` candidate. A local candidate is not a published release.
+
 `MkChad release packages` accepts tags from the protected `mkchad` and
 `mkchad-v1` branches.
 A tag matching `rehearsal-v<major>.<minor>.<patch>-mkchad.<revision>` runs the

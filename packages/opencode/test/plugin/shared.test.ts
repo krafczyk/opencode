@@ -103,4 +103,18 @@ describe("checkPluginCompatibility", () => {
       "Plugin requires opencode 1.18.18 but running 1.18.18-stock.1",
     )
   })
+
+  test("admits the 1.18.35 MkChad baseline without relaxing plugin requirements", async () => {
+    const current = { ...plugin, json: { engines: { opencode: "1.18.35" } } }
+    await expect(checkPluginCompatibility("/plugin", "1.18.35-mkchad.1", current)).resolves.toBeUndefined()
+    await expect(checkPluginCompatibility("/plugin", "1.18.29-mkchad.2", current)).rejects.toThrow(
+      "Plugin requires opencode 1.18.35 but running 1.18.29-mkchad.2",
+    )
+    await expect(
+      checkPluginCompatibility("/plugin", "1.18.35-mkchad.1", {
+        ...plugin,
+        json: { engines: { opencode: "<1.18.35" } },
+      }),
+    ).rejects.toThrow("Plugin requires opencode <1.18.35 but running 1.18.35-mkchad.1")
+  })
 })

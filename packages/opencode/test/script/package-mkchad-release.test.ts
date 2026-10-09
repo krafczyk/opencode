@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import fs from "fs/promises"
 import path from "path"
+import { tmpdir } from "os"
 import { createManifest, packageMkchadRelease } from "../../script/package-mkchad-release"
 
 const directories: string[] = []
@@ -9,23 +10,26 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((dir) => fs.rm(dir, { force: true, recursive: true })))
 })
 
-async function buildDirectory(input: { binary?: boolean; target?: "linux-arm64" | "linux-x64"; version?: string } = {}) {
-  const directory = await fs.mkdtemp("/tmp/opencode-mkchad/package-mkchad-release-")
+async function buildDirectory(
+  input: { binary?: boolean; target?: "linux-arm64" | "linux-x64"; version?: string } = {},
+) {
+  const directory = await fs.mkdtemp(path.join(tmpdir(), "package-mkchad-release-"))
   directories.push(directory)
   await fs.mkdir(path.join(directory, "bin"))
   const target = input.target ?? "linux-x64"
+  const version = input.version ?? "1.18.3-mkchad.6"
   await Bun.write(
     path.join(directory, "package.json"),
     JSON.stringify({
       name: `opencode-${target}`,
-      version: input.version ?? "1.18.3-mkchad.6",
+      version,
       os: ["linux"],
       cpu: [target.replace("linux-", "")],
     }),
   )
   if (input.binary !== false) {
     const binary = path.join(directory, "bin/opencode")
-    await Bun.write(binary, "#!/bin/sh\nprintf '1.18.3-mkchad.6\\n'\n")
+    await Bun.write(binary, `#!/bin/sh\nprintf '${version}\\n'\n`)
     await fs.chmod(binary, 0o755)
   }
   return directory
@@ -45,7 +49,7 @@ test("derives Linux glibc manifests and stable assets for both supported archite
   expect(createManifest({ target: "linux-arm64", version: "1.18.3-mkchad.6" })).toMatchObject({
     cpu: ["arm64"],
   })
-  const outputDir = await fs.mkdtemp("/tmp/opencode-mkchad/package-mkchad-release-output-")
+  const outputDir = await fs.mkdtemp(path.join(tmpdir(), "package-mkchad-release-output-"))
   directories.push(outputDir)
   const result = await packageMkchadRelease({
     buildDir: await buildDirectory({ target: "linux-arm64" }),
@@ -66,7 +70,7 @@ test("rejects absent binaries and generated-version mismatches before packing", 
   await expect(
     packageMkchadRelease({
       buildDir: await buildDirectory({ binary: false }),
-      outputDir: "/tmp/opencode-mkchad",
+      outputDir: tmpdir(),
       target: "linux-x64",
       version: "1.18.3-mkchad.6",
     }),
@@ -75,7 +79,7 @@ test("rejects absent binaries and generated-version mismatches before packing", 
   await expect(
     packageMkchadRelease({
       buildDir: await buildDirectory({ version: "1.18.3-mkchad.5" }),
-      outputDir: "/tmp/opencode-mkchad",
+      outputDir: tmpdir(),
       target: "linux-x64",
       version: "1.18.3-mkchad.6",
     }),
@@ -84,7 +88,7 @@ test("rejects absent binaries and generated-version mismatches before packing", 
   await expect(
     packageMkchadRelease({
       buildDir: await buildDirectory({ target: "linux-x64" }),
-      outputDir: "/tmp/opencode-mkchad",
+      outputDir: tmpdir(),
       target: "linux-arm64",
       version: "1.18.3-mkchad.6",
     }),
@@ -93,7 +97,7 @@ test("rejects absent binaries and generated-version mismatches before packing", 
 
 test("packs only the manifest and executable payload", async () => {
   const buildDir = await buildDirectory()
-  const outputDir = await fs.mkdtemp("/tmp/opencode-mkchad/package-mkchad-release-output-")
+  const outputDir = await fs.mkdtemp(path.join(tmpdir(), "package-mkchad-release-output-"))
   directories.push(outputDir)
   await Bun.write(path.join(buildDir, "unrelated.txt"), "must not be packed")
 
@@ -115,5 +119,21 @@ test("packs only the manifest and executable payload", async () => {
   expect(JSON.parse(await new Response(manifest.stdout).text())).toEqual(
     createManifest({ target: "linux-x64", version: "1.18.3-mkchad.6" }),
   )
+  expect(await manifest.exited).toBe(0)
+})
+
+test.each(["linux-x64", "linux-arm64"] as const)("packs the 1.18.35 MkChad candidate for %s", async (target) => {
+  const version = "1.18.35-mkchad.1"
+  const outputDir = await fs.mkdtemp(path.join(tmpdir(), "package-mkchad-release-output-"))
+  directories.push(outputDir)
+  const result = await packageMkchadRelease({
+    buildDir: await buildDirectory({ target, version }),
+    outputDir,
+    target,
+    version,
+  })
+  expect(path.basename(result.tarball)).toBe(`opencode-ai-${version}-${target}.tgz`)
+  const manifest = Bun.spawn(["tar", "-xOzf", result.tarball, "package/package.json"], { stdout: "pipe" })
+  expect(JSON.parse(await new Response(manifest.stdout).text())).toEqual(createManifest({ target, version }))
   expect(await manifest.exited).toBe(0)
 })
