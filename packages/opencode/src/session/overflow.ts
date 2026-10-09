@@ -30,6 +30,15 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
   return Math.min(natural, COMPACTION_TOKEN_LIMIT)
 }
 
+/**
+ * Checks whether reported V1 usage reaches the inclusive usable threshold.
+ * Disabled auto-compaction and unknown context return false. A truthy total
+ * takes precedence; otherwise input, output, and cache read/write are summed.
+ * Expects validated inputs, has no side effects, and intentionally throws no errors.
+ *
+ * @param input - V1 configuration, reported usage, provider model, and optional output override.
+ * @returns Whether automatic compaction is needed at this processing boundary.
+ */
 export function isOverflow(input: {
   cfg: ConfigV1.Info
   tokens: SessionV1.Assistant["tokens"]

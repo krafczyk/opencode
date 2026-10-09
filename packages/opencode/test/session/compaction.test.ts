@@ -1079,9 +1079,9 @@ describe("session.compaction.process", () => {
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
       expect(part?.tail_start_id).toBe(kept.id)
-      const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
-      expect(filtered.map((message) => message.info.id)).toContain(kept.id)
-      expect(filtered.map((message) => message.info.id)).not.toContain(excluded.id)
+      const ids = (yield* MessageV2.filterCompactedEffect(session.id)).map((message) => message.info.id)
+      expect(ids).toContain(kept.id)
+      expect(ids).not.toContain(excluded.id)
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 8_000 }) })),
   )
 
