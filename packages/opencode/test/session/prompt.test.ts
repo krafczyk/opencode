@@ -305,6 +305,26 @@ function providerCfg(url: string) {
   }
 }
 
+function compactionCfg(url: string, auto: boolean) {
+  return {
+    ...providerCfg(url),
+    provider: {
+      test: {
+        ...cfg.provider.test,
+        options: { ...cfg.provider.test.options, baseURL: url },
+        models: {
+          "test-model": {
+            ...cfg.provider.test.models["test-model"],
+            limit: { context: 1_000_000, input: 900_000, output: 128_000 },
+          },
+        },
+      },
+    },
+    agent: { reviewer: { model: "test/test-model" } },
+    compaction: { auto, preserve_recent_tokens: 8_000 },
+  }
+}
+
 const writeText = Effect.fn("test.writeText")(function* (file: string, text: string) {
   const fs = yield* FSUtil.Service
   yield* fs.writeWithDirs(file, text)
@@ -727,6 +747,93 @@ it.instance("loop stops provider overflow instead of auto-compacting when disabl
       expect(result.info.finish).toBe("error")
     }
     expect(messages.some((message) => message.parts.some((part) => part.type === "compaction"))).toBe(false)
+  }),
+)
+
+it.instance("auto compaction at 180K resumes the originating agent with summary and retained context", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => compactionCfg(url, true))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* user(chat.id, `OLDER_PLAN_MARKER ${"p".repeat(40_000)}`)
+    yield* llm.textMatch(
+      (hit) => JSON.stringify(hit.body).includes("RECENT_TASK_MARKER"),
+      "initial response",
+      { usage: { input: 180_000, output: 0 } },
+    )
+    yield* llm.textMatch(
+      (hit) => JSON.stringify(hit.body).includes("Create a new anchored summary"),
+      "CONTROLLED_SUMMARY_MARKER OLDER_PLAN_MARKER",
+    )
+    yield* llm.textMatch(
+      (hit) => JSON.stringify(hit.body).includes("CONTROLLED_SUMMARY_MARKER"),
+      "resumed response",
+    )
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "reviewer",
+      noReply: true,
+      parts: [{ type: "text", text: "RECENT_TASK_MARKER" }],
+    })
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const inputs = yield* llm.inputs
+    const summary = inputs.find((input) => JSON.stringify(input).includes("Create a new anchored summary"))
+    const resumed = inputs.find((input) => JSON.stringify(input).includes("CONTROLLED_SUMMARY_MARKER"))
+
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.agent).toBe("reviewer")
+      expect(result.info.modelID).toBe(ref.modelID)
+      expect(result.info.providerID).toBe(ref.providerID)
+    }
+    expect(JSON.stringify(summary)).toContain("OLDER_PLAN_MARKER")
+    expect(JSON.stringify(summary)).not.toContain("RECENT_TASK_MARKER")
+    expect(JSON.stringify(resumed)).toContain("RECENT_TASK_MARKER")
+    expect(JSON.stringify(resumed)).toContain("CONTROLLED_SUMMARY_MARKER")
+    expect(JSON.stringify(resumed)).toContain("OLDER_PLAN_MARKER")
+  }),
+)
+
+it.instance("manual compaction below the cap waits for an explicit follow-up prompt", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => compactionCfg(url, false))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const compact = yield* SessionCompaction.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* user(chat.id, `MANUAL_OLDER_PLAN_MARKER ${"p".repeat(40_000)}`)
+    yield* user(chat.id, "MANUAL_RECENT_TASK_MARKER")
+    yield* compact.create({ sessionID: chat.id, agent: "reviewer", model: ref, auto: false })
+    yield* llm.textMatch(
+      (hit) => JSON.stringify(hit.body).includes("Create a new anchored summary"),
+      "MANUAL_SUMMARY_MARKER",
+    )
+
+    yield* prompt.loop({ sessionID: chat.id })
+    const compacted = yield* sessions.messages({ sessionID: chat.id })
+    expect(
+      compacted.some((message) =>
+        message.parts.some((part) => part.type === "text" && part.synthetic && part.metadata?.compaction_continue),
+      ),
+    ).toBe(false)
+
+    yield* llm.textMatch(
+      (hit) => JSON.stringify(hit.body).includes("MANUAL_FOLLOW_UP_MARKER"),
+      "manual resumed response",
+    )
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "reviewer",
+      noReply: true,
+      parts: [{ type: "text", text: "MANUAL_FOLLOW_UP_MARKER" }],
+    })
+    yield* prompt.loop({ sessionID: chat.id })
+
+    const resumed = (yield* llm.inputs).find((input) => JSON.stringify(input).includes("MANUAL_FOLLOW_UP_MARKER"))
+    expect(JSON.stringify(resumed)).toContain("MANUAL_SUMMARY_MARKER")
+    expect(JSON.stringify(resumed)).toContain("MANUAL_RECENT_TASK_MARKER")
   }),
 )
 

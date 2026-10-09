@@ -96,6 +96,33 @@ Use the `linux-arm64` filename instead on ARM64. MkChad packages never check
 for or install an upstream replacement. `opencode upgrade` instead directs
 users to a reviewed GitHub Release or their managed MkChad container update.
 
+#### V1 Compaction Policy
+
+This fork caps the V1 automatic-compaction trigger at 180,000 accounted tokens.
+The compile-time ceiling applies after the existing natural threshold calculation:
+models with lower input or context/output limits retain their lower threshold.
+`compaction.auto`, `compaction.reserved`, and model/output limits retain their
+existing behavior; context zero and `auto: false` do not trigger automatic
+compaction.
+
+The MkChad and host configuration policy uses existing V1 settings:
+
+```jsonc
+"compaction": {
+  "auto": true,
+  "prune": true,
+  "reserved": 20000,
+  "preserve_recent_tokens": 8000
+}
+```
+
+`compaction.prune` remains independent. `compaction.preserve_recent_tokens`
+controls the retained history budget (the V1 default can reach 15,000 tokens),
+not the 180K trigger. Provider usage is observed at processing boundaries, so a
+turn can exceed the ceiling before compaction; compaction also has provider cost
+and can disrupt caches. Release verification and authorized provider adoption
+remain separate from this compile-time policy.
+
 #### Release Administration
 
 `MkChad release packages` accepts tags from the protected `mkchad` and
