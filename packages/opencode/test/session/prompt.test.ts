@@ -306,21 +306,28 @@ function providerCfg(url: string) {
 }
 
 function compactionCfg(url: string, auto: boolean) {
+  const config = providerCfg(url)
   return {
-    ...providerCfg(url),
+    ...config,
     provider: {
+      ...config.provider,
       test: {
-        ...cfg.provider.test,
-        options: { ...cfg.provider.test.options, baseURL: url },
+        ...config.provider.test,
         models: {
           "test-model": {
-            ...cfg.provider.test.models["test-model"],
+            ...config.provider.test.models["test-model"],
+            limit: { context: 1_000_000, input: 900_000, output: 128_000 },
+          },
+          "summary-model": {
+            ...config.provider.test.models["test-model"],
+            id: "summary-model",
+            name: "Summary Model",
             limit: { context: 1_000_000, input: 900_000, output: 128_000 },
           },
         },
       },
     },
-    agent: { reviewer: { model: "test/test-model" } },
+    agent: { reviewer: { model: "test/test-model" }, compaction: { model: "test/summary-model" } },
     compaction: { auto, preserve_recent_tokens: 8_000 },
   }
 }
@@ -756,20 +763,15 @@ it.instance("auto compaction at 180K resumes the originating agent with summary 
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
     const chat = yield* sessions.create({ title: "Pinned" })
-    yield* user(chat.id, `OLDER_PLAN_MARKER ${"p".repeat(40_000)}`)
-    yield* llm.textMatch(
-      (hit) => JSON.stringify(hit.body).includes("RECENT_TASK_MARKER"),
-      "initial response",
-      { usage: { input: 180_000, output: 0 } },
-    )
+    yield* user(chat.id, `RAW_ONLY_MARKER OLDER_PLAN_MARKER ${"p".repeat(40_000)}`)
+    yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("RECENT_TASK_MARKER"), "initial response", {
+      usage: { input: 180_000, output: 0 },
+    })
     yield* llm.textMatch(
       (hit) => JSON.stringify(hit.body).includes("Create a new anchored summary"),
       "CONTROLLED_SUMMARY_MARKER OLDER_PLAN_MARKER",
     )
-    yield* llm.textMatch(
-      (hit) => JSON.stringify(hit.body).includes("CONTROLLED_SUMMARY_MARKER"),
-      "resumed response",
-    )
+    yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("CONTROLLED_SUMMARY_MARKER"), "resumed response")
     yield* prompt.prompt({
       sessionID: chat.id,
       agent: "reviewer",
@@ -778,9 +780,9 @@ it.instance("auto compaction at 180K resumes the originating agent with summary 
     })
 
     const result = yield* prompt.loop({ sessionID: chat.id })
-    const inputs = yield* llm.inputs
-    const summary = inputs.find((input) => JSON.stringify(input).includes("Create a new anchored summary"))
-    const resumed = inputs.find((input) => JSON.stringify(input).includes("CONTROLLED_SUMMARY_MARKER"))
+    const inputs = (yield* llm.inputs).map((input) => ({ body: JSON.stringify(input), model: input.model }))
+    const summary = inputs.find((input) => input.body.includes("Create a new anchored summary"))
+    const resumed = inputs.find((input) => input.body.includes("CONTROLLED_SUMMARY_MARKER"))
 
     expect(result.info.role).toBe("assistant")
     if (result.info.role === "assistant") {
@@ -788,11 +790,15 @@ it.instance("auto compaction at 180K resumes the originating agent with summary 
       expect(result.info.modelID).toBe(ref.modelID)
       expect(result.info.providerID).toBe(ref.providerID)
     }
-    expect(JSON.stringify(summary)).toContain("OLDER_PLAN_MARKER")
-    expect(JSON.stringify(summary)).not.toContain("RECENT_TASK_MARKER")
-    expect(JSON.stringify(resumed)).toContain("RECENT_TASK_MARKER")
-    expect(JSON.stringify(resumed)).toContain("CONTROLLED_SUMMARY_MARKER")
-    expect(JSON.stringify(resumed)).toContain("OLDER_PLAN_MARKER")
+    expect(summary?.model).toBe("summary-model")
+    expect(summary?.body).toContain("RAW_ONLY_MARKER")
+    expect(summary?.body).toContain("OLDER_PLAN_MARKER")
+    expect(summary?.body).not.toContain("RECENT_TASK_MARKER")
+    expect(resumed?.model).toBe("test-model")
+    expect(resumed?.body).not.toContain("RAW_ONLY_MARKER")
+    expect(resumed?.body).toContain("RECENT_TASK_MARKER")
+    expect(resumed?.body).toContain("CONTROLLED_SUMMARY_MARKER")
+    expect(resumed?.body).toContain("OLDER_PLAN_MARKER")
   }),
 )
 
@@ -831,9 +837,11 @@ it.instance("manual compaction below the cap waits for an explicit follow-up pro
     })
     yield* prompt.loop({ sessionID: chat.id })
 
-    const resumed = (yield* llm.inputs).find((input) => JSON.stringify(input).includes("MANUAL_FOLLOW_UP_MARKER"))
-    expect(JSON.stringify(resumed)).toContain("MANUAL_SUMMARY_MARKER")
-    expect(JSON.stringify(resumed)).toContain("MANUAL_RECENT_TASK_MARKER")
+    const resumed = (yield* llm.inputs)
+      .map((input) => JSON.stringify(input))
+      .find((input) => input.includes("MANUAL_FOLLOW_UP_MARKER"))
+    expect(resumed).toContain("MANUAL_SUMMARY_MARKER")
+    expect(resumed).toContain("MANUAL_RECENT_TASK_MARKER")
   }),
 )
 
