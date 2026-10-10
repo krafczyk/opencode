@@ -9,7 +9,7 @@ afterEach(() => {
   mock.restore()
 })
 
-test.each(["1.18.3-mkchad.6", "1.18.35-mkchad.1"])(
+test.each(["1.18.3-mkchad.6", "1.18.35-mkchad.1", "1.18.35-mkchad.2"])(
   "skips automatic updates for %s before updater discovery",
   async (version) => {
     const method = spyOn(Installation, "method").mockRejectedValue(new Error("method discovery should not run"))
@@ -26,7 +26,7 @@ test.each(["1.18.3-mkchad.6", "1.18.35-mkchad.1"])(
   },
 )
 
-test.each(["1.18.3-mkchad.6", "1.18.35-mkchad.1"])(
+test.each(["1.18.3-mkchad.6", "1.18.35-mkchad.1", "1.18.35-mkchad.2"])(
   "refuses %s CLI upgrades with target and method before package-manager use",
   async (version) => {
     const method = spyOn(Installation, "method").mockRejectedValue(new Error("method discovery should not run"))

@@ -404,6 +404,83 @@ describe("session.compaction.isOverflow", () => {
     ).toBe(true)
   })
 
+  test("uses the configured ceiling for both threshold branches and inclusive accounting", () => {
+    const config = Schema.decodeUnknownSync(ConfigV1.Info)({
+      compaction: { max_tokens: 360_000, reserved: 20_000 },
+    }) as ConfigV1.Info
+    const inputLimited = createModel({ context: 1_000_000, input: 900_000, output: 128_000 })
+    const outputLimited = createModel({ context: 1_000_000, output: 128_000 })
+
+    expect(usable({ cfg: config, model: inputLimited })).toBe(360_000)
+    expect(usable({ cfg: config, model: outputLimited, outputTokenMax: 32_000 })).toBe(360_000)
+    for (const model of [inputLimited, outputLimited]) {
+      for (const count of [180_000, 359_999, 360_000, 360_001]) {
+        expect(
+          isOverflow({
+            cfg: config,
+            model,
+            tokens: { input: count, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          }),
+        ).toBe(count >= 360_000)
+      }
+    }
+    expect(
+      isOverflow({
+        cfg: config,
+        model: inputLimited,
+        tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 1, write: 1 }, total: 360_000 },
+      }),
+    ).toBe(true)
+    expect(
+      isOverflow({
+        cfg: config,
+        model: inputLimited,
+        tokens: {
+          input: 200_000,
+          output: 40_000,
+          reasoning: 999_999,
+          cache: { read: 60_000, write: 60_000 },
+          total: 0,
+        },
+      }),
+    ).toBe(true)
+  })
+
+  test("bounds a configured ceiling by model limits and retains disabled and unknown-context behavior", () => {
+    const config = Schema.decodeUnknownSync(ConfigV1.Info)({
+      compaction: { max_tokens: 360_000, reserved: 20_000 },
+    }) as ConfigV1.Info
+    expect(usable({ cfg: config, model: createModel({ context: 400_000, input: 272_000, output: 128_000 }) })).toBe(
+      252_000,
+    )
+    expect(
+      usable({ cfg: config, model: createModel({ context: 400_000, output: 128_000 }), outputTokenMax: 128_000 }),
+    ).toBe(272_000)
+    expect(usable({ cfg: config, model: createModel({ context: 100_000, input: 10_000, output: 32_000 }) })).toBe(0)
+    expect(
+      isOverflow({
+        cfg: config,
+        model: createModel({ context: 0, output: 32_000 }),
+        tokens: { input: 400_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      }),
+    ).toBe(false)
+    expect(
+      isOverflow({
+        cfg: Schema.decodeUnknownSync(ConfigV1.Info)({
+          compaction: { auto: false, max_tokens: 360_000 },
+        }) as ConfigV1.Info,
+        model: createModel({ context: 1_000_000, input: 900_000, output: 128_000 }),
+        tokens: { input: 400_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      }),
+    ).toBe(false)
+    expect(
+      usable({
+        cfg: Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { max_tokens: 100_000 } }) as ConfigV1.Info,
+        model: createModel({ context: 1_000_000, output: 128_000 }),
+      }),
+    ).toBe(100_000)
+  })
+
   test("preserves lower natural thresholds and accounting behavior", () => {
     const config = Schema.decodeUnknownSync(ConfigV1.Info)({}) as ConfigV1.Info
     const reserved = Schema.decodeUnknownSync(ConfigV1.Info)({ compaction: { reserved: 8_000 } }) as ConfigV1.Info

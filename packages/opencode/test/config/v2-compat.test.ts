@@ -162,6 +162,7 @@ describe("ConfigV2Compat.lower", () => {
         "compaction": {
           "auto": true,
           "prune": true,
+          "max_tokens": 360000,
           "reserved": 20000,
           "preserve_recent_tokens": 8000
         }
@@ -174,7 +175,20 @@ describe("ConfigV2Compat.lower", () => {
     expect(result.diagnostics).toEqual([])
     expect(config.plugin).toEqual(["example-plugin@1.0.0"])
     expect(config.agent?.reviewer?.model).toBe("test/test-model")
-    expect(config.compaction).toEqual({ auto: true, prune: true, reserved: 20_000, preserve_recent_tokens: 8_000 })
+    expect(config.compaction).toEqual({
+      auto: true,
+      prune: true,
+      max_tokens: 360_000,
+      reserved: 20_000,
+      preserve_recent_tokens: 8_000,
+    })
+  })
+
+  test("validates compaction.max_tokens as a positive integer", () => {
+    expect(lower({ compaction: { max_tokens: 1 } }).compaction?.max_tokens).toBe(1)
+    for (const max_tokens of [0, -1, 1.5, "360000", null, true, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => lower({ compaction: { max_tokens } })).toThrow("ConfigInvalidError")
+    }
   })
 
   test("keeps malformed MCP servers named servers and timeout for V1 validation", () => {

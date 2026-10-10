@@ -21513,6 +21513,10 @@
               "prune": {
                 "type": "boolean"
               },
+              "max_tokens": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
               "tail_turns": {
                 "type": "integer",
                 "minimum": 0

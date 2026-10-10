@@ -83,7 +83,7 @@ Install a reviewed release only after verifying its checksum. Select the asset
 for the host architecture:
 
 ```bash
-VERSION=1.18.3-mkchad.6
+VERSION=1.18.35-mkchad.2
 BASE="https://github.com/krafczyk/opencode/releases/download/v$VERSION"
 curl --fail --location --remote-name "$BASE/SHA256SUMS"
 curl --fail --location --remote-name "$BASE/opencode-ai-$VERSION-linux-x64.tgz"
@@ -98,19 +98,24 @@ users to a reviewed GitHub Release or their managed MkChad container update.
 
 #### V1 Compaction Policy
 
-This fork caps the V1 automatic-compaction trigger at 180,000 accounted tokens.
-The compile-time ceiling applies after the existing natural threshold calculation:
+This fork defaults the V1 automatic-compaction trigger to a ceiling of 180,000
+accounted tokens. Set `compaction.max_tokens` to a positive integer to change
+that ceiling, for example `360000` for 360K. Invalid values (including zero,
+negative numbers, fractional numbers, and strings) fail configuration validation.
+The configured ceiling applies after the existing natural threshold calculation:
 models with lower input or context/output limits retain their lower threshold.
 `compaction.auto`, `compaction.reserved`, and model/output limits retain their
 existing behavior; context zero and `auto: false` do not trigger automatic
 compaction.
 
-The MkChad and host configuration policy uses existing V1 settings:
+For example, keep automatic compaction and pruning enabled while increasing the
+ceiling to 360K:
 
 ```jsonc
 "compaction": {
   "auto": true,
   "prune": true,
+  "max_tokens": 360000,
   "reserved": 20000,
   "preserve_recent_tokens": 8000
 }
@@ -118,16 +123,27 @@ The MkChad and host configuration policy uses existing V1 settings:
 
 `compaction.prune` remains independent. `compaction.preserve_recent_tokens`
 controls the retained history budget (the V1 default can reach 15,000 tokens),
-not the 180K trigger. Provider usage is observed at processing boundaries, so a
+not the trigger ceiling. `compaction.max_tokens` does not increase a model's
+context capacity or replace reserved output headroom. It does not prevent
+explicit manual compaction or change the V2 session implementation. When
+`preserve_recent_tokens` is omitted, the retained-history budget is derived from
+the usable threshold within the existing 2,000-15,000 token bounds; specifying
+it explicitly keeps that budget independent of the ceiling.
+Restart the OpenCode server after changing its configuration. Provider usage
+is observed at processing boundaries, so a
 turn can exceed the ceiling before compaction; compaction also has provider cost
 and can disrupt caches. Release verification and authorized provider adoption
-remain separate from this compile-time policy.
+remain separate from this configuration policy. This setting requires a build
+containing the configurable-ceiling change; `v1.18.35-mkchad.1` still uses a
+fixed 180K ceiling.
 
 #### Release Administration
 
 The [1.18.35 MkChad port notes](docs/releases/1.18.35-mkchad.1.md) record the
-upstream baseline, preserved fork behavior, and verification for the local
-`1.18.35-mkchad.1` candidate. A local candidate is not a published release.
+upstream baseline and preserved fork behavior. The
+[1.18.35-mkchad.2 notes](docs/releases/1.18.35-mkchad.2.md) describe the
+configurable compaction ceiling and its verification. Native rehearsal and
+immutable publication remain separate gates from local source verification.
 
 `MkChad release packages` accepts tags from the protected `mkchad` and
 `mkchad-v1` branches.

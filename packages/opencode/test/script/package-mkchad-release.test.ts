@@ -122,18 +122,19 @@ test("packs only the manifest and executable payload", async () => {
   expect(await manifest.exited).toBe(0)
 })
 
-test.each(["linux-x64", "linux-arm64"] as const)("packs the 1.18.35 MkChad candidate for %s", async (target) => {
-  const version = "1.18.35-mkchad.1"
-  const outputDir = await fs.mkdtemp(path.join(tmpdir(), "package-mkchad-release-output-"))
-  directories.push(outputDir)
-  const result = await packageMkchadRelease({
-    buildDir: await buildDirectory({ target, version }),
-    outputDir,
-    target,
-    version,
+for (const version of ["1.18.35-mkchad.1", "1.18.35-mkchad.2"]) {
+  test.each(["linux-x64", "linux-arm64"] as const)(`packs ${version} for %s`, async (target) => {
+    const outputDir = await fs.mkdtemp(path.join(tmpdir(), "package-mkchad-release-output-"))
+    directories.push(outputDir)
+    const result = await packageMkchadRelease({
+      buildDir: await buildDirectory({ target, version }),
+      outputDir,
+      target,
+      version,
+    })
+    expect(path.basename(result.tarball)).toBe(`opencode-ai-${version}-${target}.tgz`)
+    const manifest = Bun.spawn(["tar", "-xOzf", result.tarball, "package/package.json"], { stdout: "pipe" })
+    expect(JSON.parse(await new Response(manifest.stdout).text())).toEqual(createManifest({ target, version }))
+    expect(await manifest.exited).toBe(0)
   })
-  expect(path.basename(result.tarball)).toBe(`opencode-ai-${version}-${target}.tgz`)
-  const manifest = Bun.spawn(["tar", "-xOzf", result.tarball, "package/package.json"], { stdout: "pipe" })
-  expect(JSON.parse(await new Response(manifest.stdout).text())).toEqual(createManifest({ target, version }))
-  expect(await manifest.exited).toBe(0)
-})
+}

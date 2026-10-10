@@ -6,12 +6,13 @@ import { ProviderTransform } from "@/provider/transform"
 import type { MessageV2 } from "./message-v2"
 
 const COMPACTION_BUFFER = 20_000
-const COMPACTION_TOKEN_LIMIT = 180_000
+const DEFAULT_COMPACTION_TOKEN_LIMIT = 180_000
 
 /**
  * Returns the V1 automatic-compaction threshold for a model and configuration.
  * Context zero returns zero; otherwise the model's natural usable threshold is
- * capped at the MkChad 180K policy limit without side effects.
+ * capped at compaction.max_tokens (a positive integer, default 180,000) without
+ * side effects. Lower model input/context limits still trigger compaction earlier.
  * Expects validated configuration and model metadata; no errors are intentionally thrown.
  *
  * @param input - The V1 configuration, provider model, and optional output override.
@@ -27,7 +28,7 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
   const natural = input.model.limit.input
     ? Math.max(0, input.model.limit.input - reserved)
     : Math.max(0, context - ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
-  return Math.min(natural, COMPACTION_TOKEN_LIMIT)
+  return Math.min(natural, input.cfg.compaction?.max_tokens ?? DEFAULT_COMPACTION_TOKEN_LIMIT)
 }
 
 /**

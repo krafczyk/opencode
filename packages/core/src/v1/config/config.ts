@@ -154,6 +154,10 @@ export const Info = Schema.Struct({
       prune: Schema.optional(Schema.Boolean).annotate({
         description: "Enable pruning of old tool outputs (default: false)",
       }),
+      max_tokens: Schema.optional(PositiveInt).annotate({
+        description:
+          "Positive integer ceiling on accounted tokens before V1 automatic compaction (default: 180000). The model's usable input/context limit can trigger compaction earlier. Ignored when auto is false or context is unknown.",
+      }),
       tail_turns: Schema.optional(NonNegativeInt).annotate({
         description:
           "Maximum number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction. By default retention is limited only by the preserved token budget.",

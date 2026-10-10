@@ -71,6 +71,7 @@ describe("installation", () => {
     test("identifies only MkChad release versions as managed", () => {
       expect(isManagedDistribution("1.18.3-mkchad.6")).toBe(true)
       expect(isManagedDistribution("1.18.35-mkchad.1")).toBe(true)
+      expect(isManagedDistribution("1.18.35-mkchad.2")).toBe(true)
       expect(isManagedDistribution("1.18.35")).toBe(false)
       expect(isManagedDistribution("1.18.3")).toBe(false)
       expect(isManagedDistribution("local")).toBe(false)

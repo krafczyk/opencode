@@ -305,7 +305,7 @@ function providerCfg(url: string) {
   }
 }
 
-function compactionCfg(url: string, auto: boolean) {
+function compactionCfg(url: string, auto: boolean, maxTokens?: number) {
   const config = providerCfg(url)
   return {
     ...config,
@@ -328,7 +328,7 @@ function compactionCfg(url: string, auto: boolean) {
       },
     },
     agent: { reviewer: { model: "test/test-model" }, compaction: { model: "test/summary-model" } },
-    compaction: { auto, preserve_recent_tokens: 8_000 },
+    compaction: { auto, preserve_recent_tokens: 8_000, ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }) },
   }
 }
 
@@ -757,48 +757,79 @@ it.instance("loop stops provider overflow instead of auto-compacting when disabl
   }),
 )
 
-it.instance("auto compaction at 180K resumes the originating agent with summary and retained context", () =>
+for (const maxTokens of [undefined, 360_000]) {
+  it.instance(
+    `auto compaction at ${(maxTokens ?? 180_000) / 1000}K resumes the originating agent with summary and retained context`,
+    () =>
+      Effect.gen(function* () {
+        const { llm } = yield* useServerConfig((url) => compactionCfg(url, true, maxTokens))
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({ title: "Pinned" })
+        yield* user(chat.id, `RAW_ONLY_MARKER OLDER_PLAN_MARKER ${"p".repeat(40_000)}`)
+        yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("RECENT_TASK_MARKER"), "initial response", {
+          usage: { input: maxTokens ?? 180_000, output: 0 },
+        })
+        yield* llm.textMatch(
+          (hit) => JSON.stringify(hit.body).includes("Create a new anchored summary"),
+          "CONTROLLED_SUMMARY_MARKER OLDER_PLAN_MARKER",
+        )
+        yield* llm.textMatch(
+          (hit) => JSON.stringify(hit.body).includes("CONTROLLED_SUMMARY_MARKER"),
+          "resumed response",
+        )
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "reviewer",
+          noReply: true,
+          parts: [{ type: "text", text: "RECENT_TASK_MARKER" }],
+        })
+
+        const result = yield* prompt.loop({ sessionID: chat.id })
+        const inputs = (yield* llm.inputs).map((input) => ({ body: JSON.stringify(input), model: input.model }))
+        const summary = inputs.find((input) => input.body.includes("Create a new anchored summary"))
+        const resumed = inputs.find((input) => input.body.includes("CONTROLLED_SUMMARY_MARKER"))
+
+        expect(result.info.role).toBe("assistant")
+        if (result.info.role === "assistant") {
+          expect(result.info.agent).toBe("reviewer")
+          expect(result.info.modelID).toBe(ref.modelID)
+          expect(result.info.providerID).toBe(ref.providerID)
+        }
+        expect(summary?.model).toBe("summary-model")
+        expect(summary?.body).toContain("RAW_ONLY_MARKER")
+        expect(summary?.body).toContain("OLDER_PLAN_MARKER")
+        expect(summary?.body).not.toContain("RECENT_TASK_MARKER")
+        expect(resumed?.model).toBe("test-model")
+        expect(resumed?.body).not.toContain("RAW_ONLY_MARKER")
+        expect(resumed?.body).toContain("RECENT_TASK_MARKER")
+        expect(resumed?.body).toContain("CONTROLLED_SUMMARY_MARKER")
+        expect(resumed?.body).toContain("OLDER_PLAN_MARKER")
+      }),
+  )
+}
+
+it.instance("configured 360K ceiling does not compact at the old 180K threshold", () =>
   Effect.gen(function* () {
-    const { llm } = yield* useServerConfig((url) => compactionCfg(url, true))
+    const { llm } = yield* useServerConfig((url) => compactionCfg(url, true, 360_000))
     const prompt = yield* SessionPrompt.Service
     const sessions = yield* Session.Service
-    const chat = yield* sessions.create({ title: "Pinned" })
-    yield* user(chat.id, `RAW_ONLY_MARKER OLDER_PLAN_MARKER ${"p".repeat(40_000)}`)
-    yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("RECENT_TASK_MARKER"), "initial response", {
-      usage: { input: 180_000, output: 0 },
-    })
-    yield* llm.textMatch(
-      (hit) => JSON.stringify(hit.body).includes("Create a new anchored summary"),
-      "CONTROLLED_SUMMARY_MARKER OLDER_PLAN_MARKER",
-    )
-    yield* llm.textMatch((hit) => JSON.stringify(hit.body).includes("CONTROLLED_SUMMARY_MARKER"), "resumed response")
+    const chat = yield* sessions.create({ title: "Configured ceiling" })
+    yield* llm.text("uncompacted response", { usage: { input: 180_000, output: 0 } })
     yield* prompt.prompt({
       sessionID: chat.id,
       agent: "reviewer",
       noReply: true,
-      parts: [{ type: "text", text: "RECENT_TASK_MARKER" }],
+      parts: [{ type: "text", text: "Continue without early compaction" }],
     })
 
     const result = yield* prompt.loop({ sessionID: chat.id })
-    const inputs = (yield* llm.inputs).map((input) => ({ body: JSON.stringify(input), model: input.model }))
-    const summary = inputs.find((input) => input.body.includes("Create a new anchored summary"))
-    const resumed = inputs.find((input) => input.body.includes("CONTROLLED_SUMMARY_MARKER"))
-
-    expect(result.info.role).toBe("assistant")
-    if (result.info.role === "assistant") {
-      expect(result.info.agent).toBe("reviewer")
-      expect(result.info.modelID).toBe(ref.modelID)
-      expect(result.info.providerID).toBe(ref.providerID)
-    }
-    expect(summary?.model).toBe("summary-model")
-    expect(summary?.body).toContain("RAW_ONLY_MARKER")
-    expect(summary?.body).toContain("OLDER_PLAN_MARKER")
-    expect(summary?.body).not.toContain("RECENT_TASK_MARKER")
-    expect(resumed?.model).toBe("test-model")
-    expect(resumed?.body).not.toContain("RAW_ONLY_MARKER")
-    expect(resumed?.body).toContain("RECENT_TASK_MARKER")
-    expect(resumed?.body).toContain("CONTROLLED_SUMMARY_MARKER")
-    expect(resumed?.body).toContain("OLDER_PLAN_MARKER")
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(yield* llm.hits).toHaveLength(1)
+    expect(result.parts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "text", text: "uncompacted response" })]),
+    )
+    expect(messages.some((message) => message.parts.some((part) => part.type === "compaction"))).toBe(false)
   }),
 )
 
