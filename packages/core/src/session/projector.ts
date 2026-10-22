@@ -14,6 +14,7 @@ import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
 import { SessionContextEpoch } from "./context-epoch"
 import { ProjectDirectories } from "../project/directories"
+import { ProjectTable } from "../project/sql"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
 import path from "path"
@@ -260,12 +261,31 @@ const layer = Layer.effectDiscard(
         const directory = registerRoot
           ? path.join(event.data.location.directory, subdirectory ?? "")
           : event.data.location.directory
+        if (existing && event.data.project) {
+          yield* db
+            .insert(ProjectTable)
+            .values({
+              id: event.data.project.id,
+              worktree: event.data.location.directory,
+              vcs: event.data.project.vcs,
+              sandboxes: [],
+              time_created: DateTime.toEpochMillis(event.data.timestamp),
+              time_updated: DateTime.toEpochMillis(event.data.timestamp),
+            })
+            .onConflictDoNothing()
+            .run()
+            .pipe(Effect.orDie)
+        }
         if (existing && registerRoot) {
-          yield* directories.create({ projectID: existing.projectID, directory: event.data.location.directory })
+          yield* directories.create({
+            projectID: event.data.project?.id ?? existing.projectID,
+            directory: event.data.location.directory,
+          })
         }
         yield* db
           .update(SessionTable)
           .set({
+            project_id: event.data.project?.id,
             directory,
             path: subdirectory,
             workspace_id: event.data.location.workspaceID ? WorkspaceV2.ID.make(event.data.location.workspaceID) : null,

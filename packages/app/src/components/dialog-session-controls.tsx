@@ -46,15 +46,24 @@ type Feedback =
   | "reload.reconciliation_failed"
   | "directory.reconciliation_failed"
   | "context.reconciliation_failed"
+  | `directory.refused.${Extract<SessionControlChangeDirectoryOutcome, { type: "refused" }>["reason"]}`
 
 type FeedbackInput =
   | { action: "reload"; type: ProjectControlGuardedReloadOutcome["type"] }
-  | { action: "directory"; type: SessionControlChangeDirectoryOutcome["type"] }
+  | {
+      action: "directory"
+      type: SessionControlChangeDirectoryOutcome["type"]
+      reason?: Extract<SessionControlChangeDirectoryOutcome, { type: "refused" }>["reason"]
+    }
   | { action: "context"; type: SessionControlReloadContextOutcome["type"] }
 
+/** Returns a localized feedback suffix for a control outcome, preserving a supplied directory-refusal reason. */
 export function sessionControlFeedback(input: FeedbackInput): Feedback {
   if (input.action === "reload") return feedback.reload[input.type]
-  if (input.action === "directory") return feedback.directory[input.type]
+  if (input.action === "directory") {
+    if (input.type === "refused" && input.reason) return `directory.refused.${input.reason}`
+    return feedback.directory[input.type]
+  }
   return feedback.context[input.type]
 }
 
@@ -192,7 +201,11 @@ export function DialogSessionControls() {
         reconcileWhen: (outcome) => outcome.type === "completed" || outcome.type === "noop",
         reconcile: () => request.sync.session.sync(request.sessionID, { force: true }),
       })
-      const feedback = sessionControlFeedback({ action: "directory", type: result.outcome.type })
+      const feedback = sessionControlFeedback({
+        action: "directory",
+        type: result.outcome.type,
+        reason: result.outcome.type === "refused" ? result.outcome.reason : undefined,
+      })
       if (!result.reconciled) {
         report(request, "directory.reconciliation_failed")
         return

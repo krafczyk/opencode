@@ -372,12 +372,6 @@ describe("SessionControl.changeDirectory", () => {
         type: "refused",
         reason: "not_directory",
       })
-      const nongit = AbsolutePath.make(path.join(test.directory, "nongit"))
-      yield* Effect.promise(() => fs.mkdir(nongit))
-      expect(yield* control.changeDirectory({ sessionID, expectedSource: source, destination: nongit })).toEqual({
-        type: "refused",
-        reason: "not_git",
-      })
       expect(
         yield* control.changeDirectory({
           sessionID,
@@ -394,7 +388,7 @@ describe("SessionControl.changeDirectory", () => {
   )
 
   it.instance(
-    "refuses origin-less and mismatched unregistered Git destinations",
+    "accepts origin-less and mismatched unregistered Git destinations and assigns their project",
     () =>
       Effect.gen(function* () {
         const test = yield* TestInstance
@@ -418,25 +412,104 @@ describe("SessionControl.changeDirectory", () => {
             version: "test",
           })
           .run()
-        const root = path.join(test.directory, "origin-refusal-destination")
+        const root = AbsolutePath.make(path.join(test.directory, "origin-refusal-destination"))
         const destination = AbsolutePath.make(path.join(root, "nested"))
         yield* Effect.promise(() => fs.mkdir(destination, { recursive: true }))
         yield* Effect.promise(() => $`git init`.cwd(root).quiet())
+        yield* Effect.promise(() =>
+          $`git -c user.name=Test -c user.email=test@example.com -c commit.gpgsign=false commit --allow-empty -m initial`
+            .cwd(root)
+            .quiet(),
+        )
         const control = yield* SessionControl.Service
         const sessions = yield* SessionStore.Service
-        expect(yield* control.changeDirectory({ sessionID, expectedSource: source, destination })).toEqual({
-          type: "refused",
-          reason: "origin_missing",
+        const project = yield* Project.Service
+        const directories = yield* ProjectDirectories.Service
+        const originlessProjectID = (yield* project.resolve(destination)).id
+        expect(originlessProjectID).not.toBe(Project.ID.global)
+        const first = yield* control.changeDirectory({ sessionID, expectedSource: source, destination })
+        expect(first).toMatchObject({
+          type: "completed",
+          session: { projectID: originlessProjectID, location: { directory: destination } },
         })
         yield* Effect.promise(() => $`git remote add origin https://github.com/other/project.git`.cwd(root).quiet())
-        expect(yield* control.changeDirectory({ sessionID, expectedSource: source, destination })).toEqual({
-          type: "refused",
-          reason: "origin_mismatch",
+        const otherID = SessionSchema.ID.make("ses_directory_other_origin")
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: otherID,
+            project_id: Project.ID.global,
+            slug: "other-origin",
+            directory: source,
+            title: "other-origin",
+            version: "test",
+          })
+          .run()
+        const otherProjectID = (yield* project.resolve(destination)).id
+        expect(
+          yield* control.changeDirectory({ sessionID: otherID, expectedSource: source, destination }),
+        ).toMatchObject({
+          type: "completed",
+          session: { projectID: otherProjectID, location: { directory: destination } },
         })
-        expect(yield* sessions.get(sessionID)).toMatchObject({ location: { directory: source } })
+        expect(yield* sessions.get(sessionID)).toMatchObject({ location: { directory: destination } })
+        expect(yield* directories.list(otherProjectID)).toEqual([{ directory: root, strategy: undefined }])
       }),
     { git: true },
   )
+
+  for (const git of [false, true]) {
+    it.instance(`moves a home-directory session into a new ${git ? "Git" : "non-Git"} project directory`, () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const { db } = yield* Database.Service
+        const source = AbsolutePath.make(test.directory)
+        const destination = AbsolutePath.make(path.join(source, "new-project"))
+        yield* Effect.promise(() => fs.mkdir(destination))
+        if (git) {
+          yield* Effect.promise(() => $`git init`.cwd(destination).quiet())
+          yield* Effect.promise(() =>
+            $`git remote add origin https://github.com/owner/new-project.git`.cwd(destination).quiet(),
+          )
+        }
+        yield* Effect.promise(() => fs.writeFile(path.join(source, "source.txt"), "source"))
+        yield* Effect.promise(() => fs.writeFile(path.join(destination, "destination.txt"), "destination"))
+        const sessionID = SessionSchema.ID.make(`ses_home_to_project_${git}`)
+        yield* db
+          .insert(ProjectTable)
+          .values({ id: Project.ID.global, worktree: source, sandboxes: [] })
+          .onConflictDoNothing()
+          .run()
+        yield* db
+          .insert(SessionTable)
+          .values({
+            id: sessionID,
+            project_id: Project.ID.global,
+            slug: "coordination",
+            directory: source,
+            title: "Project coordination",
+            version: "test",
+          })
+          .run()
+        const control = yield* SessionControl.Service
+        const project = yield* Project.Service
+        const result = yield* control.changeDirectory({ sessionID, expectedSource: source, destination })
+        expect(result).toMatchObject({
+          type: "completed",
+          session: {
+            id: sessionID,
+            title: "Project coordination",
+            projectID: (yield* project.resolve(destination)).id,
+            location: { directory: destination },
+          },
+        })
+        expect(yield* Effect.promise(() => fs.readFile(path.join(source, "source.txt"), "utf8"))).toBe("source")
+        expect(yield* Effect.promise(() => fs.readFile(path.join(destination, "destination.txt"), "utf8"))).toBe(
+          "destination",
+        )
+      }),
+    )
+  }
 
   race.instance(
     "rejects a legacy move while directory control holds the session lease",
@@ -626,7 +699,8 @@ describe("SessionControl.changeDirectory", () => {
           type: "completed",
           session: { location: { directory: destination } },
         })
-        expect((yield* directories.list(projectID)).filter((item) => item.directory === root)).toEqual([
+        const destinationProjectID = (yield* project.resolve(destination)).id
+        expect((yield* directories.list(destinationProjectID)).filter((item) => item.directory === root)).toEqual([
           { directory: root, strategy: undefined },
         ])
       }),
@@ -838,7 +912,10 @@ describe("SessionControl.changeDirectory", () => {
             destinationIgnored: await fs.readFile(path.join(destination, "ignored.txt")),
           })),
         ).toEqual(bytes)
-        expect(yield* directories.list(Project.ID.global)).toEqual([{ directory: root, strategy: undefined }])
+        const project = yield* Project.Service
+        expect(yield* directories.list((yield* project.resolve(destination)).id)).toEqual([
+          { directory: root, strategy: undefined },
+        ])
       }),
     { git: true },
   )

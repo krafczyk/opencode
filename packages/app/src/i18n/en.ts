@@ -124,6 +124,18 @@ export const dict = {
   "session.controls.reload.reconciliation_failed": "Project reloaded, but local session refresh failed",
   "session.controls.directory.noop": "Session already uses this directory",
   "session.controls.directory.refused": "Directory change was refused",
+  "session.controls.directory.refused.not_found": "The session no longer exists",
+  "session.controls.directory.refused.stale_source":
+    "The session directory changed. Reopen session controls and try again.",
+  "session.controls.directory.refused.blocked":
+    "Finish or stop active work and resolve pending prompts, permissions, or questions before moving the session",
+  "session.controls.directory.refused.missing_directory":
+    "The destination directory does not exist or cannot be accessed by the server",
+  "session.controls.directory.refused.not_directory": "The destination path is not a directory",
+  "session.controls.directory.refused.not_git":
+    "This server requires an already registered directory or a Git checkout",
+  "session.controls.directory.refused.origin_missing": "This server requires a Git origin for both projects",
+  "session.controls.directory.refused.origin_mismatch": "This server requires matching Git origins for both projects",
   "session.controls.directory.precommit_failed": "Directory change failed before it was committed",
   "session.controls.directory.completed": "Directory change completed",
   "session.controls.directory.reconciliation_failed": "Server completed the action, but local session refresh failed",

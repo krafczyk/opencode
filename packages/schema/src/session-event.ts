@@ -12,6 +12,7 @@ import { SessionID } from "./session-id"
 import { Location } from "./location"
 import { SessionMessage } from "./session-message"
 import { Revert } from "./revert"
+import { Project } from "./project"
 
 export { FileAttachment }
 
@@ -73,6 +74,14 @@ export const ModelSwitched = Event.define({
 })
 export type ModelSwitched = typeof ModelSwitched.Type
 
+/** Destination project identity for an explicit directory move; replay creates a missing project without replacing its metadata. */
+export const MoveProject = Schema.Struct({
+  id: Project.ID,
+  vcs: optional(Project.Vcs),
+}).annotate({ identifier: "Session.MoveProject" })
+export interface MoveProject extends Schema.Schema.Type<typeof MoveProject> {}
+
+/** Records placement and optional destination project ownership. Historical moves omit `project` and retain their owner. */
 export const Moved = Event.define({
   type: "session.next.moved",
   ...options,
@@ -80,6 +89,7 @@ export const Moved = Event.define({
     ...Base,
     location: Location.Ref,
     subdirectory: RelativePath.pipe(optional),
+    project: optional(MoveProject),
   },
 })
 export type Moved = typeof Moved.Type

@@ -19,7 +19,7 @@ import { Context, Effect, Exit, Layer, Option, Schema } from "effect"
 import { SessionControlState } from "./control-state"
 import { SessionRunState } from "./run-state"
 
-/** A request to change one selected session's durable directory without changing either worktree. */
+/** A request to move one selected idle session to an existing directory, including another project, without moving files. */
 export class ChangeDirectoryInput extends Schema.Class<ChangeDirectoryInput>("SessionControl.ChangeDirectoryInput")({
   sessionID: SessionSchema.ID,
   expectedSource: AbsolutePath,
@@ -68,7 +68,8 @@ export type ReloadContextResult =
 
 /**
  * Provides server-owned selected-session directory and context controls under the session admission lease.
- * Directory changes validate shared blockers and destination identity without changing either worktree. Context reloads
+ * Directory changes validate shared blockers and an existing destination, resolve its project, and atomically update
+ * placement and ownership without changing worktree files. Registered roots retain their explicit project association. Context reloads
  * quiesce both execution systems before resetting one cached epoch. Callers own client-side reconciliation.
  */
 export interface Interface {
@@ -153,20 +154,12 @@ const layer = Layer.effect(
                 const session = yield* change.change({ ...input, root: registeredRoot })
                 return { type: "completed" as const, session }
               }
-              const destination = yield* project.origin(input.destination)
-              if (!destination) return { type: "refused" as const, reason: "not_git" as const }
-              const projectRow = yield* db
-                .select()
-                .from(ProjectTable)
-                .where(eq(ProjectTable.id, current.projectID))
-                .get()
-              const origin = projectRow ? yield* project.origin(AbsolutePath.make(projectRow.worktree)) : undefined
-              if (!destination.identity || !origin?.identity) {
-                return { type: "refused" as const, reason: "origin_missing" as const }
-              }
-              if (destination.identity !== origin.identity)
-                return { type: "refused" as const, reason: "origin_mismatch" as const }
-              const session = yield* change.change({ ...input, root: destination.root })
+              const destination = yield* project.resolve(input.destination)
+              const session = yield* change.change({
+                ...input,
+                root: destination.vcs ? destination.directory : input.destination,
+                project: { id: destination.id, vcs: destination.vcs?.type },
+              })
               return { type: "completed" as const, session }
             }),
           ),

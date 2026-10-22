@@ -13,12 +13,13 @@ import { SessionSchema } from "../session/schema"
 import { SessionTable } from "../session/sql"
 import { SessionStore } from "../session/store"
 
-/** Input for an atomic selected-session directory transition. `root` is the already-validated project directory root. */
+/** Input for an atomic selected-session directory transition. `root` is the validated destination root; optional `project` selects its owner. */
 export const Input = Schema.Struct({
   sessionID: SessionSchema.ID,
   expectedSource: AbsolutePath,
   destination: AbsolutePath,
   root: AbsolutePath,
+  project: Schema.optional(SessionEvent.MoveProject),
 }).annotate({ identifier: "ChangeSessionDirectory.Input" })
 export type Input = typeof Input.Type
 
@@ -32,8 +33,9 @@ export class StaleSourceError extends Schema.TaggedErrorClass<StaleSourceError>(
 ) {}
 
 /**
- * Commits a selected session's exact directory, required root registration, moved event, and context-epoch reset atomically.
- * Callers must validate filesystem and Git identity before invoking it; this service never creates, moves, copies, applies,
+ * Commits a selected session's exact directory, optional project reassignment/creation, root registration, moved event,
+ * and context-epoch reset atomically. Returns the updated session or StaleSourceError when its source changed.
+ * Callers must validate the destination directory and resolve its project before invoking it; this service never moves, copies, applies,
  * discards, cleans, or otherwise changes a worktree.
  */
 export interface Interface {
@@ -61,6 +63,7 @@ const layer = Layer.effect(
           {
             sessionID: input.sessionID,
             location: Location.Ref.make({ directory: input.root }),
+            project: input.project,
             // Legacy moves store a plain relative path; the control prefix makes registration intent replayable.
             subdirectory: RelativePath.make(subdirectory ? `./${subdirectory}` : "."),
             timestamp: yield* DateTime.now,

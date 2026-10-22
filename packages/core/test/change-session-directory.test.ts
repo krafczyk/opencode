@@ -34,10 +34,11 @@ const it = testEffect(
 )
 
 describe("ChangeSessionDirectory", () => {
-  it.effect("atomically stores an exact nested directory, registers its root, and resets only its context epoch", () =>
+  it.effect("atomically moves and replays one session across projects", () =>
     Effect.gen(function* () {
       const { db } = yield* Database.Service
       const projectID = Project.ID.make("project-directory-control")
+      const destinationProjectID = Project.ID.make("project-directory-destination")
       const source = AbsolutePath.make("/project/source")
       const root = AbsolutePath.make("/project/worktree")
       const destination = AbsolutePath.make("/project/worktree/packages/core")
@@ -71,9 +72,29 @@ describe("ChangeSessionDirectory", () => {
 
       const control = yield* ChangeSessionDirectory.Service
       const directories = yield* ProjectDirectories.Service
-      const session = yield* control.change({ sessionID, expectedSource: source, destination, root })
+      const session = yield* control.change({
+        sessionID,
+        expectedSource: source,
+        destination,
+        root,
+        project: { id: destinationProjectID, vcs: "git" },
+      })
 
       expect(session.location.directory).toBe(destination)
+      expect(session.projectID).toBe(destinationProjectID)
+      const createdProject = yield* db
+        .select()
+        .from(ProjectTable)
+        .where(eq(ProjectTable.id, destinationProjectID))
+        .get()
+      expect(createdProject).toMatchObject({
+        worktree: root,
+        vcs: "git",
+      })
+      expect(yield* db.select().from(SessionTable).where(eq(SessionTable.id, unrelated)).get()).toMatchObject({
+        project_id: projectID,
+        directory: source,
+      })
       expect(
         yield* db
           .select({ directory: SessionTable.directory })
@@ -95,7 +116,55 @@ describe("ChangeSessionDirectory", () => {
           .where(eq(SessionContextEpochTable.session_id, unrelated))
           .get(),
       ).toMatchObject({ baseline: "other" })
-      expect(yield* directories.list(projectID)).toEqual([{ directory: root, strategy: undefined }])
+      expect(yield* directories.list(destinationProjectID)).toEqual([{ directory: root, strategy: undefined }])
+
+      expect(yield* directories.list(projectID)).toEqual([])
+
+      const events = yield* EventV2.Service
+      const serialized = yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, sessionID)).get()
+      if (!serialized) throw new Error("missing serialized move")
+      yield* events.remove(sessionID)
+      yield* db
+        .update(SessionTable)
+        .set({ directory: source, project_id: projectID, path: null })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+      yield* db.delete(ProjectDirectoryTable).where(eq(ProjectDirectoryTable.project_id, destinationProjectID)).run()
+      yield* db.delete(ProjectTable).where(eq(ProjectTable.id, destinationProjectID)).run()
+      yield* events.replay({
+        id: serialized.id,
+        type: serialized.type,
+        seq: serialized.seq,
+        aggregateID: serialized.aggregate_id,
+        data: serialized.data,
+      })
+      expect(yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()).toMatchObject({
+        directory: destination,
+        project_id: destinationProjectID,
+      })
+      expect(yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, destinationProjectID)).get()).toEqual(
+        createdProject,
+      )
+      expect(yield* directories.list(destinationProjectID)).toEqual([{ directory: root, strategy: undefined }])
+
+      yield* db
+        .update(ProjectTable)
+        .set({ name: "Existing project", time_updated: 1 })
+        .where(eq(ProjectTable.id, projectID))
+        .run()
+      yield* control.change({
+        sessionID,
+        expectedSource: destination,
+        destination: source,
+        root: source,
+        project: { id: projectID },
+      })
+      expect(yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get()).toMatchObject({
+        name: "Existing project",
+        worktree: source,
+        time_created: 1,
+        time_updated: 1,
+      })
     }),
   )
 
@@ -106,6 +175,7 @@ describe("ChangeSessionDirectory", () => {
       const directories = yield* ProjectDirectories.Service
       const control = yield* ChangeSessionDirectory.Service
       const projectID = Project.ID.make("project-directory-rollback")
+      const destinationProjectID = Project.ID.make("project-directory-rollback-destination")
       const source = AbsolutePath.make("/project/source")
       const root = AbsolutePath.make("/project/worktree")
       const destination = AbsolutePath.make("/project/worktree/packages/core")
@@ -155,8 +225,18 @@ describe("ChangeSessionDirectory", () => {
             .get(),
         ).toMatchObject({ baseline: "baseline" })
         expect(yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, sessionID)).all()).toEqual([])
+        expect(
+          yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, destinationProjectID)).get(),
+        ).toBeUndefined()
       })
-      const change = () => control.change({ sessionID, expectedSource: source, destination, root })
+      const change = () =>
+        control.change({
+          sessionID,
+          expectedSource: source,
+          destination,
+          root,
+          project: { id: destinationProjectID, vcs: "git" },
+        })
 
       expect(
         yield* control
@@ -166,6 +246,10 @@ describe("ChangeSessionDirectory", () => {
       yield* unchanged()
 
       for (const [name, statement] of [
+        [
+          "project_creation",
+          "CREATE TRIGGER fail_project_creation BEFORE INSERT ON project BEGIN SELECT RAISE(ABORT, 'project creation failed'); END",
+        ],
         [
           "directory_registration",
           "CREATE TRIGGER fail_directory_registration BEFORE INSERT ON project_directory BEGIN SELECT RAISE(ABORT, 'registration failed'); END",

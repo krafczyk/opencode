@@ -20,6 +20,19 @@ describe("session control feedback", () => {
     expect(sessionControlFeedback({ action: "context", type: "recovery_uncertain" })).toBe("context.recovery_uncertain")
   })
 
+  test("preserves actionable directory refusal reasons and the older generic fallback", () => {
+    expect(sessionControlFeedback({ action: "directory", type: "refused", reason: "blocked" })).toBe(
+      "directory.refused.blocked",
+    )
+    expect(sessionControlFeedback({ action: "directory", type: "refused", reason: "missing_directory" })).toBe(
+      "directory.refused.missing_directory",
+    )
+    expect(sessionControlFeedback({ action: "directory", type: "refused", reason: "stale_source" })).toBe(
+      "directory.refused.stale_source",
+    )
+    expect(sessionControlFeedback({ action: "directory", type: "refused" })).toBe("directory.refused")
+  })
+
   test("maps server inspection vocabulary to localized value keys", () => {
     expect(sessionLocationKey("primary_worktree")).toBe("session.controls.location.primary_worktree")
     expect(sessionLocationKey("recognized_worktree")).toBe("session.controls.location.recognized_worktree")
